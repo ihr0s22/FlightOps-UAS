@@ -1,8 +1,8 @@
 {
-  "name": "flightdeck",
+  "name": "flightops",
   "private": true,
-  "version": "2.0.0",
-  "description": "FlightDeck — a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
+  "version": "2.1.0",
+  "description": "FlightOps — a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
   "license": "Apache-2.0",
   "author": "Ian Rosario",
   "homepage": "https://ihr0s22.github.io/FlightOps-UAS/",

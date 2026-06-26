@@ -1,0 +1,14 @@
+{
+  "name": "flightops-relay",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Small CORS-proxy + sync relay for FlightOps — proxies adsb.fi and aviationweather.gov (neither sends CORS headers, so the browser can't call them directly), and stores synced workspace snapshots/scheduled reports.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
