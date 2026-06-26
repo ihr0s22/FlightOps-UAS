@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Vite config for FlightDeck.
+// Vite config for FlightOps.
 // `base: "./"` makes built asset paths relative, so the app works whether it's served from a domain
 // root, a GitHub Pages project subpath (https://user.github.io/<repo>/), or opened locally. The app
 // has no client-side router, so a relative base is safe.

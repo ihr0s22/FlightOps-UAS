@@ -10,6 +10,21 @@ Note: `SCHEMA_VERSION` (in `FlightOps-UAS.jsx`) tracks saved-workspace migration
 independently of the package version, since it only changes when the data shape
 changes, not on every release.
 
+## [2.2.0] — 2026-06-26
+
+### Added
+- **Docker self-hosting** — `Dockerfile` + `nginx.conf` build and serve the static app,
+  `relay/Dockerfile` containerizes the relay, and `docker-compose.yml` runs both
+  together (app on `:8080`, relay on `:8787`, relay's synced data persisted in a named
+  volume). `docker compose up -d --build` gets a fully private instance running with no
+  public hosting involved. Documented in a new "Self-hosting (Docker)" section in
+  `README.md`.
+
+### Changed
+- Fixed remaining stale "FlightDeck" branding and outdated copy in `README.md`
+  (basemap names after the dead sectional source was removed, "Connect drive folder" →
+  "Connect a folder" wording) and a stale comment in `vite.config.js`.
+
 ## [2.1.0] — 2026-06-26
 
 ### Added
