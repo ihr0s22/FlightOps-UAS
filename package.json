@@ -1,0 +1,41 @@
+{
+  "name": "flightdeck",
+  "private": true,
+  "version": "2.0.0",
+  "description": "FlightDeck — a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
+  "license": "Apache-2.0",
+  "author": "Ian Rosario",
+  "homepage": "https://ihr0s22.github.io/FlightOps-UAS/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ihr0s22/FlightOps-UAS.git"
+  },
+  "keywords": [
+    "uas",
+    "drone",
+    "part-107",
+    "operations",
+    "react",
+    "vite",
+    "local-first"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide-react": "^0.469.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.5.2",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^3.4.19",
+    "vite": "^5.4.11"
+  }
+}

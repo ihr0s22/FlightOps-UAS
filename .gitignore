@@ -1,0 +1,14 @@
+# Dependencies & build output
+node_modules
+dist
+.vite
+
+# Local tooling / editor
+.vscode
+.idea
+
+# OS / misc cruft
+.DS_Store
+Thumbs.db
+*.lnk
+*.log
