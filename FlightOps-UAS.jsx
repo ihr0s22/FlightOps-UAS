@@ -8,7 +8,7 @@ import {
   ArrowUpRight, Eye, Wifi, Sun, Moon, RefreshCw, Plus as PlusIcon, Minus, Link2,
   Server, Play, Square, Satellite, Plug, HardDrive, Upload,
   Calendar, CalendarDays, BadgeCheck, ChevronLeft,
-  FileText, Paperclip, ExternalLink, Sparkles
+  FileText, Paperclip, ExternalLink, Sparkles, LayoutGrid, List, SlidersHorizontal
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
@@ -199,10 +199,11 @@ function seed() {
     settings: {
       theme: "dark",
       org: { name: "Your UAS Ops", part107: "On file", units: "metric", accent: "#1776bb", logo: "" },
-      airspace: { basemap: "sectional", lat: 38.95, lon: -77.45, zoom: 9, trafficSource: "api", localUrl: "", wxSource: "open-meteo", station: "KIAD", stations: ["KIAD", "KRIC", "KORF", "KDCA"] },
+      airspace: { basemap: "street", lat: 38.95, lon: -77.45, zoom: 9, trafficSource: "api", localUrl: "", wxSource: "open-meteo", station: "KIAD", stations: ["KIAD", "KRIC", "KORF", "KDCA"] },
       ops: { type: "mp4", url: "" },
       telemetry: { source: "sim", wsUrl: "", mqttUrl: "", mqttTopic: "uas/+/telemetry" },
       relay: { url: "" },
+      columns: {},   // per-view list of hidden column ids, e.g. { flights: ["dist"] } — absent/empty = all shown
     },
     version: SCHEMA_VERSION,
   };
@@ -266,6 +267,7 @@ function ensure(s) {
   out.settings.ops = { ...base.settings.ops, ...(src.settings?.ops || {}) };
   out.settings.telemetry = { ...base.settings.telemetry, ...(src.settings?.telemetry || {}) };
   out.settings.relay = { ...base.settings.relay, ...(src.settings?.relay || {}) };
+  out.settings.columns = { ...base.settings.columns, ...(src.settings?.columns || {}) };
   out.version = SCHEMA_VERSION;
   return out;
 }
@@ -407,6 +409,33 @@ function useHighlightScroll(highlight) {
   useEffect(() => { if (ref.current) ref.current.scrollIntoView({ behavior: "smooth", block: "center" }); }, [highlight]);
   return ref;
 }
+// Per-view column visibility, persisted in settings.columns[viewKey] as a list of hidden column ids
+// (absent/empty = everything shown). Keeps a stable column order regardless of toggle order.
+function useHiddenColumns(viewKey, data, setSetting) {
+  const hidden = data.settings.columns?.[viewKey] || [];
+  const toggle = (id) => { const next = hidden.includes(id) ? hidden.filter(x => x !== id) : [...hidden, id]; setSetting(["columns", viewKey], next); };
+  const resetCols = () => setSetting(["columns", viewKey], []);
+  return { hidden, toggle, resetCols };
+}
+// Dropdown for picking which columns a table shows. `columns` excludes the always-on actions column.
+function ColumnsMenu({ columns, hidden, toggle, onReset }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => { const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
+  return <div ref={ref} className="relative">
+    <Btn onClick={() => setOpen(o => !o)}><SlidersHorizontal size={13} />Columns</Btn>
+    {open && <div className="absolute right-0 z-30 mt-1.5 w-56 rounded-xl border bd p-2 shadow-2xl" style={{ background: "var(--modal)" }}>
+      <div className="flex items-center justify-between px-1.5 pb-1.5"><span className="text-[10px] font-semibold uppercase tracking-widest t4">Columns</span>
+        <button onClick={onReset} className="text-[11px] acc hover:opacity-80">Show all</button></div>
+      <div className="max-h-64 overflow-y-auto">{columns.map(c => (
+        <label key={c.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-sm t2 hov">
+          <input type="checkbox" checked={!hidden.includes(c.id)} onChange={() => toggle(c.id)} />
+          {c.label}
+        </label>))}</div>
+    </div>}
+  </div>;
+}
 function RowActions({ onEdit, onDelete }) {
   return <div className="flex justify-end gap-1">
     {onEdit && <button onClick={onEdit} className="rounded p-1.5 t4 hov hover:opacity-90"><Pencil size={14} /></button>}
@@ -462,6 +491,7 @@ function App() {
   const [firstRun, setFirstRun] = useState(false);   // no saved data → show the empty/demo chooser
   const [highlight, setHighlight] = useState(null);   // { coll, id } from global search — navigated record to flash
   const [loadError, setLoadError] = useState(false);  // saved blob unreadable/incompatible → recoverable error screen
+  const [dragRailKey, setDragRailKey] = useState(null); // key of the rail icon currently being dragged for reordering
 
   // First launch (no saved blob) shows the chooser instead of auto-seeding demo data.
   // A corrupt/incompatible blob (ensure/migrate throwing) surfaces a retryable error instead of hanging on "Loading…".
@@ -564,6 +594,17 @@ function App() {
   const closeModal = () => setModal(null);
   const goManage = (v) => { setTab("manage"); setView(v); };
 
+  // Rail icons can be dragged into a custom order; the chosen order is persisted in settings.
+  const railOrder = data.settings.railOrder && data.settings.railOrder.length === RAIL.length ? data.settings.railOrder : RAIL.map(r => r.key);
+  const railItems = railOrder.map(k => RAIL.find(r => r.key === k)).filter(Boolean);
+  const moveRailIcon = (fromKey, toKey) => {
+    if (fromKey === toKey) return;
+    const order = railOrder.filter(k => k !== fromKey);
+    const idx = order.indexOf(toKey);
+    order.splice(idx, 0, fromKey);
+    setSetting(["railOrder"], order);
+  };
+
   return (
     <div data-theme={theme} className="flex min-h-screen w-full" style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", "--accent": accent, "--accent-ink": accentInk }}>
       <style>{THEME_CSS}</style>
@@ -574,9 +615,14 @@ function App() {
             ? <img src={logo} alt="Company logo" className="h-full w-full object-cover" />
             : <div className="grid h-full w-full place-items-center accbg"><Plane size={18} /></div>}
         </div>
-        {RAIL.map(r => { const active = tab === r.key; const Icon = r.icon;
+        {railItems.map(r => { const active = tab === r.key; const Icon = r.icon; const dragging = dragRailKey === r.key;
           return <button key={r.key} onClick={() => setTab(r.key)} title={r.label}
-            className={`relative flex h-11 w-11 flex-col items-center justify-center rounded-lg transition-colors ${active ? "accsoft" : "t4 hov"}`}>
+            draggable
+            onDragStart={(e) => { setDragRailKey(r.key); e.dataTransfer.effectAllowed = "move"; }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); if (dragRailKey) moveRailIcon(dragRailKey, r.key); setDragRailKey(null); }}
+            onDragEnd={() => setDragRailKey(null)}
+            className={`relative flex h-11 w-11 flex-col items-center justify-center rounded-lg transition-colors cursor-grab active:cursor-grabbing ${active ? "accsoft" : "t4 hov"} ${dragging ? "opacity-40" : ""}`}>
             {active && <span className="absolute left-0 h-6 w-0.5 -translate-x-2 rounded-full" style={{ background: "var(--accent)" }} />}
             <Icon size={19} /><span className="mt-0.5 text-[8px] font-medium uppercase tracking-wide">{r.label.split(" ")[0]}</span></button>; })}
       </nav>
@@ -607,19 +653,19 @@ function App() {
           {tab === "settings" && <Settings {...{ data, setData, setSetting, onReset: resetWorkspace }} />}
           {tab === "manage" && <>
             <div className="mb-5"><GlobalSearch data={data} nameOf={nameOf} onPick={goSearch} /></div>
-            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight }} />}
-            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight }} />}
-            {view === "laanc" && <Laanc {...{ data, setModal, remove }} />}
-            {view === "waivers" && <Waivers {...{ data, setModal, remove }} />}
-            {view === "documents" && <Documents {...{ data, setModal, remove }} />}
+            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight, setSetting }} />}
+            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight, setSetting }} />}
+            {view === "laanc" && <Laanc {...{ data, setModal, remove, setSetting }} />}
+            {view === "waivers" && <Waivers {...{ data, setModal, remove, setSetting }} />}
+            {view === "documents" && <Documents {...{ data, setModal, remove, setSetting }} />}
             {(view === "checklists" || view === "proc-checklists") && <Checklists {...{ data, setModal, remove, update }} />}
             {(view === "risk" || view === "proc-risk") && <RiskList {...{ data, setModal, remove }} />}
-            {view === "maintenance" && <Maintenance {...{ data, setModal, remove, nameOf }} />}
-            {view === "incidents" && <Incidents {...{ data, setModal, remove, nameOf }} />}
-            {view === "aircraft" && <Aircraft {...{ data, setModal, remove, highlight }} />}
-            {view === "batteries" && <Batteries {...{ data, setModal, remove }} />}
+            {view === "maintenance" && <Maintenance {...{ data, setModal, remove, nameOf, setSetting }} />}
+            {view === "incidents" && <Incidents {...{ data, setModal, remove, nameOf, setSetting }} />}
+            {view === "aircraft" && <Aircraft {...{ data, setModal, remove, highlight, setSetting }} />}
+            {view === "batteries" && <Batteries {...{ data, setModal, remove, setSetting }} />}
             {view === "workflows" && <Workflows {...{ data, setModal, remove }} />}
-            {view === "users" && <UsersView {...{ data, setModal, remove, highlight }} />}
+            {view === "users" && <UsersView {...{ data, setModal, remove, highlight, setSetting }} />}
           </>}
         </div>
       </main>
@@ -840,10 +886,11 @@ function Schedule({ data, nameOf, setModal, goManage }) {
 }
 
 /* ============================ airspace ============================ */
+// ChartBundle's free sectional tile service (wms.chartbundle.com) has been discontinued — the domain
+// no longer resolves. There's no reliable free/no-CORS replacement, so only the two working basemaps remain.
 const TILE = {
   street: { url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`, label: "Street" },
   aerial: { url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`, label: "Aerial" },
-  sectional: { url: (z, x, y) => `https://wms.chartbundle.com/tms/1.0.0/sec/${z}/${x}/${y}.png?origin=nw`, label: "Sectional" },
 };
 const lon2t = (lon, z) => (lon + 180) / 360 * 2 ** z;
 const lat2t = (lat, z) => (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * 2 ** z;
@@ -873,7 +920,7 @@ function TileMap({ basemap, center, zoom, markers, onPan }) {
   const onUp = () => { drag.current = null; };
   return <div ref={ref} className="relative h-full w-full overflow-hidden select-none" style={{ cursor: "grab", background: "#0b1320" }}
     onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
-    {tiles.map(t => <img key={`${t.tx}-${t.ty}`} alt="" draggable={false} src={TILE[basemap].url(z, t.tx, t.ty)}
+    {tiles.map(t => <img key={`${t.tx}-${t.ty}`} alt="" draggable={false} src={(TILE[basemap] || TILE.street).url(z, t.tx, t.ty)}
       onError={e => { e.currentTarget.style.visibility = "hidden"; }}
       style={{ position: "absolute", left: t.px, top: t.py, width: 256, height: 256, pointerEvents: "none" }} />)}
     {markers.map((m, i) => { const p = proj(m.lat, m.lon); if (p.left < -40 || p.left > size.w + 40 || p.top < -40 || p.top > size.h + 40) return null;
@@ -901,13 +948,24 @@ function Airspace({ data, setSetting }) {
   const fetchTraffic = async () => {
     setLoading(true); setTrafficMsg("");
     try {
+      // opendata.adsb.fi answers fine server-side but sends no Access-Control-Allow-Origin header, so a
+      // direct browser fetch is always blocked by CORS. Route through the relay (same one used for METAR)
+      // when one's configured; otherwise fall back to a direct attempt (works for a local receiver on-network).
+      const relay = (data.settings.relay?.url || "").replace(/\/$/, "");
       const url = as.trafficSource === "local" && as.localUrl
         ? as.localUrl
-        : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/25`;
+        : relay
+          ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=25`
+          : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/25`;
       const r = await fetch(url); const j = await r.json();
       const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: a.track || 0, lat: a.lat, lon: a.lon }));
       setTraffic(ac.length ? ac : sample);
-    } catch { setTraffic(sample); setTrafficMsg("Couldn't reach the traffic feed (CORS or offline) — showing sample contacts."); }
+    } catch {
+      setTraffic(sample);
+      setTrafficMsg(as.trafficSource === "local" && as.localUrl
+        ? "Couldn't reach your local receiver — showing sample contacts."
+        : "adsb.fi blocks direct browser requests (no CORS headers) — set a relay URL in Settings to proxy /api/adsb, or switch to a local receiver. Showing sample contacts.");
+    }
     finally { setLoading(false); }
   };
   useEffect(() => { setTraffic(sample); }, [sample]);
@@ -1332,11 +1390,11 @@ function exportPdf(report, range) {
     .chart{border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:18px}.chart h3{margin:0 0 10px;font-size:12px}.br{display:flex;align-items:center;gap:8px;margin:5px 0}.bl{width:130px;font-size:11px;color:#475569}.bt{flex:1;background:#f1f5f9;border-radius:4px;height:14px}.bf{display:block;height:14px;background:#1776bb;border-radius:4px}.bv{width:40px;text-align:right;font-size:11px}
     table{width:100%;border-collapse:collapse;font-size:11px}th{text-align:left;background:#f8fafc;border-bottom:2px solid #e2e8f0;padding:6px 8px;text-transform:uppercase;font-size:9px;color:#64748b}td{padding:6px 8px;border-bottom:1px solid #f1f5f9}
     .foot{margin-top:24px;color:#94a3b8;font-size:10px;text-align:center}@media print{body{margin:18mm}}</style></head><body>
-    <div class="head"><div class="brand">FlightDeck<small>UAS Ops Console</small></div><div class="meta">Generated ${esc(new Date().toLocaleString())}<br>Range: ${esc(range.from)} → ${esc(range.to)}<br>${report.raw.length} records</div></div>
+    <div class="head"><div class="brand">FlightOps<small>UAS Ops Console</small></div><div class="meta">Generated ${esc(new Date().toLocaleString())}<br>Range: ${esc(range.from)} → ${esc(range.to)}<br>${report.raw.length} records</div></div>
     <h1>${esc(cap(report.entity))} report</h1><p class="sub">Operational summary for the selected period.</p>
     <div class="kpis">${kpis}</div><div class="chart"><h3>${esc(report.chart.title)}</h3>${bars || '<em style="color:#94a3b8">No data</em>'}</div>
     <table><thead><tr>${report.cols.map(h => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>
-    <div class="foot">Generated by FlightDeck — verify against source logs before official filing.</div>
+    <div class="foot">Generated by FlightOps — verify against source logs before official filing.</div>
     <script>window.onload=function(){setTimeout(function(){window.print()},250)}</script></body></html>`;
   const w = window.open("", "_blank"); if (!w) { alert("Allow pop-ups to export PDF (print dialog → Save as PDF)."); return; }
   w.document.write(html); w.document.close();
@@ -1354,18 +1412,18 @@ function StoragePanel({ data, setData }) {
   const disconnect = async () => { await disconnectDrive(); setDrive(null); setMsg("Back to in-browser storage."); };
   return (
     <Panel title="Storage" icon={HardDrive}>
-      <Kv k="Mode" v={drive ? "External drive" : (hasArtifactStore ? "Browser (this app)" : "Browser (local)")} />
+      <Kv k="Mode" v={drive ? "Local folder" : (hasArtifactStore ? "Browser (this app)" : "Browser (local)")} />
       {drive && <Kv k="Folder" v={drive} />}
       <div className="mt-2 flex flex-wrap gap-2">
-        {drive ? <Btn onClick={disconnect}>Disconnect drive</Btn>
-          : <Btn variant="primary" onClick={connect} disabled={!fsSupported}><HardDrive size={13} />Connect drive folder</Btn>}
+        {drive ? <Btn onClick={disconnect}>Disconnect folder</Btn>
+          : <Btn variant="primary" onClick={connect} disabled={!fsSupported}><HardDrive size={13} />Connect a folder</Btn>}
         <Btn onClick={() => exportData(data)}><Download size={13} />Export file</Btn>
         <Btn onClick={() => importData(d => setData(ensure(d)))}><Upload size={13} />Import file</Btn>
       </div>
       {msg && <p className="pt-2 text-[11px] acc">{msg}</p>}
       <p className="pt-1 text-[11px] t4">{fsSupported
-        ? "Connect a folder on your external drive — the app writes flightdeck.json there on every change and reads it on launch. Chrome/Edge, self-hosted (not this preview)."
-        : "Folder auto-save needs Chrome or Edge. Export/Import works in any browser — save flightdeck.json onto your drive and load it back."}</p>
+        ? "Connect any folder — on an internal drive, an external drive, or a network share — the app writes flightdeck.json there on every change and reads it on launch. Chrome/Edge, self-hosted (not this preview)."
+        : "Folder auto-save needs Chrome or Edge. Export/Import works in any browser — save flightdeck.json onto any drive and load it back."}</p>
     </Panel>
   );
 }
@@ -1405,7 +1463,7 @@ function RelayPanel({ data, setSetting }) {
         {sync === "ok" && <span className="text-xs acc">Synced to database</span>}
         {sync === "fail" && <span className="text-xs text-rose-400">Sync failed</span>}
       </div>
-      <p className="pt-2 text-[11px] t4">Save the URL, Test reachability, then Sync to push records into the relay's database (audited). Powers METAR, scheduled delivery, and the telemetry bridge.</p>
+      <p className="pt-2 text-[11px] t4">Save the URL, Test reachability, then Sync to push records into the relay's database (audited). Powers METAR, ADS-B traffic, scheduled delivery, and the telemetry bridge.</p>
     </Panel>
   );
 }
@@ -1468,12 +1526,43 @@ function Settings({ data, setData, setSetting, onReset }) {
 
 /* ============================ manage views ============================ */
 const Cell = ({ children, mono }) => <Td mono={mono}>{children}</Td>;
-function Missions({ data, setModal, remove, nameOf, highlight }) {
+function ViewToggle({ value, onChange }) {
+  return <div className="flex items-center gap-0.5 rounded-md border bd sf2 p-0.5">
+    {[["card", "Cards", LayoutGrid], ["list", "List", List]].map(([k, l, Icon]) => (
+      <button key={k} type="button" onClick={() => onChange(k)} title={l}
+        className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${value === k ? "accbg" : "t3 hov"}`}>
+        <Icon size={13} />{l}</button>))}</div>;
+}
+function Missions({ data, setModal, remove, nameOf, highlight, setSetting }) {
   const list = data.missions;
   const hlRef = useHighlightScroll(highlight);
+  const [viewMode, setViewMode] = useState("card");
+  const { hidden, toggle, resetCols } = useHiddenColumns("missions", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: m => <Cell>{m.name}</Cell> },
+    { id: "date", label: "Date", cell: m => <Cell mono>{m.date}</Cell> },
+    { id: "location", label: "Location", cell: m => <Cell>{m.location}</Cell> },
+    { id: "operators", label: "Operators", cell: m => <Cell>{m.operators.map(id => nameOf("users", id)).join(", ") || "Unassigned"}</Cell> },
+    { id: "aircraft", label: "Aircraft", cell: m => <Cell mono>{m.aircraft.map(id => nameOf("aircraft", id)).join(", ") || "Unassigned"}</Cell> },
+    { id: "laanc", label: "LAANC", cell: m => <Cell>{m.laanc}</Cell> },
+    { id: "risk", label: "Risk", cell: m => <Cell>{m.risk}</Cell> },
+    { id: "status", label: "Status", cell: m => <Td><Badge value={m.status} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<>
-    <PageHeader title="Missions" subtitle="Plan operations and pre-assign crew and aircraft." action={<Btn variant="primary" onClick={() => setModal({ type: "mission" })}><Plus size={15} />New mission</Btn>} />
+    <PageHeader title="Missions" subtitle="Plan operations and pre-assign crew and aircraft."
+      action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
+        {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
+        <Btn variant="primary" onClick={() => setModal({ type: "mission" })}><Plus size={15} />New mission</Btn></div>} />
     {list.length === 0 ? <Empty icon={Map} label="No missions yet" hint="Create a mission to assign operators and aircraft." />
+      : viewMode === "list"
+      ? <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(m => { const hl = highlight?.coll === "missions" && highlight.id === m.id;
+        return <Row key={m.id} hl={hl} innerRef={hl ? hlRef : null}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(m)}</React.Fragment>)}
+        <Td><div className="flex justify-end gap-1">
+          <button onClick={() => setModal({ type: "flight", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Log flight"><Plane size={14} /></button>
+          <button onClick={() => setModal({ type: "checklistRun", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Checklist"><ClipboardCheck size={14} /></button>
+          <RowActions onEdit={() => setModal({ type: "mission", item: m })} onDelete={() => remove("missions", m.id)} /></div></Td></Row>; })}</Table>
       : <div className="grid gap-3 sm:grid-cols-2">{list.map(m => { const hl = highlight?.coll === "missions" && highlight.id === m.id;
         return <div key={m.id} ref={hl ? hlRef : null} className={`rounded-xl border bd sf p-4 ${hl ? "hl-card" : ""}`}>
         <div className="flex items-start justify-between gap-2"><div><h3 className="font-semibold t1">{m.name}</h3><p className="mt-0.5 flex items-center gap-1 text-xs t3"><MapPin size={12} />{m.location}</p></div><Badge value={m.status} /></div>
@@ -1484,40 +1573,74 @@ function Missions({ data, setModal, remove, nameOf, highlight }) {
 }
 const L = ({ k, v, mono }) => <div className="flex justify-between gap-3"><span className="t4">{k}</span><span className={`text-right t2 ${mono ? "font-mono" : ""}`}>{v}</span></div>;
 
-function Flights({ data, setModal, remove, nameOf, highlight }) {
+function Flights({ data, setModal, remove, nameOf, highlight, setSetting }) {
   const hlRef = useHighlightScroll(highlight);
-  return (<><PageHeader title="Flights" subtitle="Logged sorties and telemetry." action={<Btn variant="primary" onClick={() => setModal({ type: "flight" })}><Plus size={15} />Log flight</Btn>} />
+  const { hidden, toggle, resetCols } = useHiddenColumns("flights", data, setSetting);
+  const runOf = f => { const runs = (data.checklistRuns || []).filter(r => r.flightId === f.id); return runs.find(r => r.complete) || runs[0]; };
+  const columns = [
+    { id: "date", label: "Date", cell: f => <Cell mono>{f.date}</Cell> },
+    { id: "mission", label: "Mission", cell: f => <Cell>{data.missions.find(m => m.id === f.missionId)?.name || "—"}</Cell> },
+    { id: "rpic", label: "RPIC", cell: f => <Cell>{nameOf("users", f.operator)}</Cell> },
+    { id: "aircraft", label: "Aircraft", cell: f => <Cell mono>{nameOf("aircraft", f.aircraft)}</Cell> },
+    { id: "dur", label: "Dur (min)", cell: f => <Cell mono>{f.dur}</Cell> },
+    { id: "alt", label: "Max alt (m)", cell: f => <Cell mono>{f.maxAlt}</Cell> },
+    { id: "dist", label: "Dist (km)", cell: f => <Cell mono>{f.dist}</Cell> },
+    { id: "status", label: "Status", cell: f => <Td><Badge value={f.status} /></Td> },
+    { id: "preflight", label: "Pre-flight", cell: f => { const run = runOf(f); return <Td>{run
+      ? <button onClick={() => setModal({ type: "checklistRun", item: run })} className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: run.complete ? "#10b981" : "#f59e0b" }}><ClipboardCheck size={13} />{run.complete ? "Complete" : "Partial"}</button>
+      : <button onClick={() => setModal({ type: "checklistRun", item: { flightId: f.id, missionId: f.missionId } })} className="inline-flex items-center gap-1 text-xs t3 hover:acc"><ClipboardCheck size={13} />Run</button>}</Td>; } },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Flights" subtitle="Logged sorties and telemetry."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "flight" })}><Plus size={15} />Log flight</Btn></div>} />
     {data.flights.length === 0 ? <Empty icon={Plane} label="No flights logged" hint="Log a flight from here or from a mission." />
-      : <Table cols={["Date", "Mission", "RPIC", "Aircraft", "Dur (min)", "Max alt (m)", "Dist (km)", "Status", "Pre-flight", ""]}>{data.flights.map(f => {
-        const runs = (data.checklistRuns || []).filter(r => r.flightId === f.id);
-        const run = runs.find(r => r.complete) || runs[0];
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{data.flights.map(f => {
         const hl = highlight?.coll === "flights" && highlight.id === f.id;
         return <Row key={f.id} hl={hl} innerRef={hl ? hlRef : null}>
-        <Cell mono>{f.date}</Cell><Cell>{data.missions.find(m => m.id === f.missionId)?.name || "—"}</Cell><Cell>{nameOf("users", f.operator)}</Cell><Cell mono>{nameOf("aircraft", f.aircraft)}</Cell><Cell mono>{f.dur}</Cell><Cell mono>{f.maxAlt}</Cell><Cell mono>{f.dist}</Cell><Td><Badge value={f.status} /></Td>
-        <Td>{run
-          ? <button onClick={() => setModal({ type: "checklistRun", item: run })} className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: run.complete ? "#10b981" : "#f59e0b" }}><ClipboardCheck size={13} />{run.complete ? "Complete" : "Partial"}</button>
-          : <button onClick={() => setModal({ type: "checklistRun", item: { flightId: f.id, missionId: f.missionId } })} className="inline-flex items-center gap-1 text-xs t3 hover:acc"><ClipboardCheck size={13} />Run</button>}</Td>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(f)}</React.Fragment>)}
         <Td><RowActions onEdit={() => setModal({ type: "flight", item: f })} onDelete={() => remove("flights", f.id)} /></Td></Row>; })}</Table>}</>);
 }
-function Laanc({ data, setModal, remove }) {
-  return (<><PageHeader title="LAANC Authorizations" subtitle="Airspace authorizations on file." action={<Btn variant="primary" onClick={() => setModal({ type: "laanc" })}><Plus size={15} />New authorization</Btn>} />
+function Laanc({ data, setModal, remove, setSetting }) {
+  const { hidden, toggle, resetCols } = useHiddenColumns("laanc", data, setSetting);
+  const columns = [
+    { id: "conf", label: "Confirmation", cell: l => <Cell mono>{l.conf}</Cell> },
+    { id: "mission", label: "Mission", cell: l => <Cell>{data.missions.find(m => m.id === l.missionId)?.name || "—"}</Cell> },
+    { id: "airspace", label: "Airspace", cell: l => <Cell>{l.airspace}</Cell> },
+    { id: "ceiling", label: "Ceiling (ft)", cell: l => <Cell mono>{l.ceiling}</Cell> },
+    { id: "window", label: "Window", cell: l => <Cell mono>{(l.start || "").replace("T", " ")}</Cell> },
+    { id: "status", label: "Status", cell: l => <Td><Badge value={l.status} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="LAANC Authorizations" subtitle="Airspace authorizations on file."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "laanc" })}><Plus size={15} />New authorization</Btn></div>} />
     {data.laanc.length === 0 ? <Empty icon={Radio} label="No authorizations" hint="Record LAANC approvals tied to a mission." />
-      : <Table cols={["Confirmation", "Mission", "Airspace", "Ceiling (ft)", "Window", "Status", ""]}>{data.laanc.map(l => <Row key={l.id}>
-        <Cell mono>{l.conf}</Cell><Cell>{data.missions.find(m => m.id === l.missionId)?.name || "—"}</Cell><Cell>{l.airspace}</Cell><Cell mono>{l.ceiling}</Cell><Cell mono>{(l.start || "").replace("T", " ")}</Cell><Td><Badge value={l.status} /></Td>
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{data.laanc.map(l => <Row key={l.id}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(l)}</React.Fragment>)}
         <Td><RowActions onEdit={() => setModal({ type: "laanc", item: l })} onDelete={() => remove("laanc", l.id)} /></Td></Row>)}</Table>}</>);
 }
-function Waivers({ data, setModal, remove }) {
+function Waivers({ data, setModal, remove, setSetting }) {
   const now = new Date();
   const list = data.waivers || [];
-  return (<><PageHeader title="Waivers & COAs" subtitle="Part 107 waivers, COAs, and exemptions on file." action={<Btn variant="primary" onClick={() => setModal({ type: "waiver" })}><Plus size={15} />New waiver / COA</Btn>} />
+  const { hidden, toggle, resetCols } = useHiddenColumns("waivers", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: w => <Cell>{w.name}</Cell> },
+    { id: "type", label: "Type", cell: w => <Cell>{w.type}</Cell> },
+    { id: "scope", label: "Scope", cell: w => <Td><span className="t2">{w.scope}</span></Td> },
+    { id: "number", label: "Number", cell: w => <Cell mono>{w.number || "—"}</Cell> },
+    { id: "expiry", label: "Expiry", cell: w => { const d = daysUntil(w.expiry, now); const cls = d == null ? "t3" : d < 0 ? "text-rose-400" : d < 60 ? "text-amber-400" : "t3";
+      return <Td><span className={`font-mono text-xs ${cls}`}>{w.expiry || "—"}{d != null && d >= 0 && d < 60 ? ` · ${Math.round(d)}d` : ""}</span></Td>; } },
+    { id: "status", label: "Status", cell: w => { const d = daysUntil(w.expiry, now); return <Td><Badge value={d != null && d < 0 ? "Expired" : w.status} /></Td>; } },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Waivers & COAs" subtitle="Part 107 waivers, COAs, and exemptions on file."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "waiver" })}><Plus size={15} />New waiver / COA</Btn></div>} />
     {list.length === 0 ? <Empty icon={BadgeCheck} label="No waivers or COAs" hint="Track waivers, COAs, and exemptions with their scope and expiry." />
-      : <Table cols={["Name", "Type", "Scope", "Number", "Expiry", "Status", ""]}>{list.map(w => { const d = daysUntil(w.expiry, now);
-        const cls = d == null ? "t3" : d < 0 ? "text-rose-400" : d < 60 ? "text-amber-400" : "t3";
-        return <Row key={w.id}>
-        <Cell>{w.name}</Cell><Cell>{w.type}</Cell><Td><span className="t2">{w.scope}</span></Td><Cell mono>{w.number || "—"}</Cell>
-        <Td><span className={`font-mono text-xs ${cls}`}>{w.expiry || "—"}{d != null && d >= 0 && d < 60 ? ` · ${Math.round(d)}d` : ""}</span></Td>
-        <Td><Badge value={d != null && d < 0 ? "Expired" : w.status} /></Td>
-        <Td><RowActions onEdit={() => setModal({ type: "waiver", item: w })} onDelete={() => remove("waivers", w.id)} /></Td></Row>; })}</Table>}</>);
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(w => <Row key={w.id}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(w)}</React.Fragment>)}
+        <Td><RowActions onEdit={() => setModal({ type: "waiver", item: w })} onDelete={() => remove("waivers", w.id)} /></Td></Row>)}</Table>}</>);
 }
 // Reads a chosen file into a data-URL kept on the document record (small files only; use a reference link for large ones).
 function pickDocFile(setForm) {
@@ -1527,7 +1650,7 @@ function pickDocFile(setForm) {
     const r = new FileReader(); r.onload = () => setForm(s => ({ ...s, fileData: r.result, fileName: f.name, refUrl: "" })); r.readAsDataURL(f); };
   inp.click();
 }
-function Documents({ data, setModal, remove }) {
+function Documents({ data, setModal, remove, setSetting }) {
   const now = new Date();
   const list = data.documents || [];
   const linkLabel = (t, id) => {
@@ -1536,19 +1659,28 @@ function Documents({ data, setModal, remove }) {
     const r = coll.find(x => x.id === id);
     return r ? (r.tail || r.name || "—") : "—";
   };
-  return (<><PageHeader title="Document Vault" subtitle="Compliance and operational documents — uploaded files or external references." action={<Btn variant="primary" onClick={() => setModal({ type: "document" })}><Plus size={15} />New document</Btn>} />
+  const { hidden, toggle, resetCols } = useHiddenColumns("documents", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: dn => <Cell>{dn.name}</Cell> },
+    { id: "category", label: "Category", cell: dn => <Cell>{dn.category}</Cell> },
+    { id: "linked", label: "Linked to", cell: dn => <Cell>{linkLabel(dn.linkedType, dn.linkedId)}</Cell> },
+    { id: "issued", label: "Issued", cell: dn => <Cell mono>{dn.issueDate || "—"}</Cell> },
+    { id: "expiry", label: "Expiry", cell: dn => { const d = daysUntil(dn.expiry, now); const cls = d == null ? "t3" : d < 0 ? "text-rose-400" : d < 60 ? "text-amber-400" : "t3";
+      return <Td><span className={`font-mono text-xs ${cls}`}>{dn.expiry || "—"}{d != null && d >= 0 && d < 60 ? ` · ${Math.round(d)}d` : d != null && d < 0 ? " · expired" : ""}</span></Td>; } },
+    { id: "file", label: "File / reference", cell: dn => <Td>{dn.fileData
+      ? <a href={dn.fileData} download={dn.fileName || dn.name} className="inline-flex items-center gap-1 text-xs acc hover:opacity-80"><Paperclip size={12} />{dn.fileName || "file"}</a>
+      : dn.refUrl
+        ? <a href={dn.refUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs acc hover:opacity-80"><ExternalLink size={12} />Link</a>
+        : <span className="text-xs t4">—</span>}</Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Document Vault" subtitle="Compliance and operational documents — uploaded files or external references."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "document" })}><Plus size={15} />New document</Btn></div>} />
     {list.length === 0 ? <Empty icon={FileText} label="No documents" hint="Upload a file or add a reference for insurance, registrations, manuals, waivers, and more." />
-      : <Table cols={["Name", "Category", "Linked to", "Issued", "Expiry", "File / reference", ""]}>{list.map(dn => { const d = daysUntil(dn.expiry, now);
-        const cls = d == null ? "t3" : d < 0 ? "text-rose-400" : d < 60 ? "text-amber-400" : "t3";
-        return <Row key={dn.id}>
-        <Cell>{dn.name}</Cell><Cell>{dn.category}</Cell><Cell>{linkLabel(dn.linkedType, dn.linkedId)}</Cell><Cell mono>{dn.issueDate || "—"}</Cell>
-        <Td><span className={`font-mono text-xs ${cls}`}>{dn.expiry || "—"}{d != null && d >= 0 && d < 60 ? ` · ${Math.round(d)}d` : d != null && d < 0 ? " · expired" : ""}</span></Td>
-        <Td>{dn.fileData
-          ? <a href={dn.fileData} download={dn.fileName || dn.name} className="inline-flex items-center gap-1 text-xs acc hover:opacity-80"><Paperclip size={12} />{dn.fileName || "file"}</a>
-          : dn.refUrl
-            ? <a href={dn.refUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs acc hover:opacity-80"><ExternalLink size={12} />Link</a>
-            : <span className="text-xs t4">—</span>}</Td>
-        <Td><RowActions onEdit={() => setModal({ type: "document", item: dn })} onDelete={() => remove("documents", dn.id)} /></Td></Row>; })}</Table>}</>);
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(dn => <Row key={dn.id}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(dn)}</React.Fragment>)}
+        <Td><RowActions onEdit={() => setModal({ type: "document", item: dn })} onDelete={() => remove("documents", dn.id)} /></Td></Row>)}</Table>}</>);
 }
 function GlobalSearch({ data, nameOf, onPick }) {
   const [q, setQ] = useState("");
@@ -1599,7 +1731,7 @@ function FirstRun({ onEmpty, onDemo }) {
     <style>{THEME_CSS}</style>
     <div className="w-full max-w-md rounded-2xl border bd sf p-7 text-center shadow-2xl">
       <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl accbg"><Plane size={22} /></div>
-      <h1 className="text-lg font-bold t1">Welcome to FlightDeck</h1>
+      <h1 className="text-lg font-bold t1">Welcome to FlightOps</h1>
       <p className="mt-1 text-sm t3">How would you like to start? You can switch later by resetting in Settings.</p>
       <div className="mt-6 grid gap-3 text-left">
         <button onClick={onEmpty} className="rounded-xl border bd sf2 p-4 hov">
@@ -1650,43 +1782,87 @@ function RiskList({ data, setModal, remove }) {
         <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><div className="text-xs uppercase tracking-wider t4">Hazards</div><p className="mt-1 t2">{r.hazards}</p></div><div><div className="text-xs uppercase tracking-wider t4">Mitigations</div><p className="mt-1 t2">{r.mitigations}</p></div></div>
         <div className="mt-3 flex justify-end gap-2 border-t bd pt-3"><Btn onClick={() => setModal({ type: "risk", item: r })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("riskAssessments", r.id)}><Trash2 size={14} /></Btn></div></div>)}</div>}</>);
 }
-function Maintenance({ data, setModal, remove, nameOf }) {
-  return (<><PageHeader title="Maintenance" subtitle="Service history per aircraft." action={<Btn variant="primary" onClick={() => setModal({ type: "maintenance" })}><Plus size={15} />Log service</Btn>} />
+function Maintenance({ data, setModal, remove, nameOf, setSetting }) {
+  const { hidden, toggle, resetCols } = useHiddenColumns("maintenance", data, setSetting);
+  const columns = [
+    { id: "date", label: "Date", cell: m => <Cell mono>{m.date}</Cell> },
+    { id: "aircraft", label: "Aircraft", cell: m => <Cell mono>{nameOf("aircraft", m.aircraft)}</Cell> },
+    { id: "type", label: "Type", cell: m => <Cell>{m.type}</Cell> },
+    { id: "desc", label: "Description", cell: m => <Cell>{m.desc}</Cell> },
+    { id: "tech", label: "Technician", cell: m => <Cell>{m.tech}</Cell> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Maintenance" subtitle="Service history per aircraft."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "maintenance" })}><Plus size={15} />Log service</Btn></div>} />
     {data.maintenance.length === 0 ? <Empty icon={Wrench} label="No maintenance records" />
-      : <Table cols={["Date", "Aircraft", "Type", "Description", "Technician", ""]}>{data.maintenance.map(m => <Row key={m.id}>
-        <Cell mono>{m.date}</Cell><Cell mono>{nameOf("aircraft", m.aircraft)}</Cell><Cell>{m.type}</Cell><Cell>{m.desc}</Cell><Cell>{m.tech}</Cell>
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{data.maintenance.map(m => <Row key={m.id}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(m)}</React.Fragment>)}
         <Td><RowActions onEdit={() => setModal({ type: "maintenance", item: m })} onDelete={() => remove("maintenance", m.id)} /></Td></Row>)}</Table>}</>);
 }
-function Incidents({ data, setModal, remove, nameOf }) {
-  return (<><PageHeader title="Incidents" subtitle="Reportable events and resolutions." action={<Btn variant="primary" onClick={() => setModal({ type: "incident" })}><Plus size={15} />Report incident</Btn>} />
+function Incidents({ data, setModal, remove, nameOf, setSetting }) {
+  const { hidden, toggle, resetCols } = useHiddenColumns("incidents", data, setSetting);
+  const columns = [
+    { id: "date", label: "Date", cell: i => <Cell mono>{i.date}</Cell> },
+    { id: "aircraft", label: "Aircraft", cell: i => <Cell mono>{nameOf("aircraft", i.aircraft)}</Cell> },
+    { id: "severity", label: "Severity", cell: i => <Td><span className="rounded-full px-2 py-0.5 text-xs" style={{ background: (i.severity === "Major" ? "#f43f5e" : i.severity === "Moderate" ? "#f59e0b" : "#64748b") + "26", color: i.severity === "Major" ? "#f43f5e" : i.severity === "Moderate" ? "#f59e0b" : "#94a3b8" }}>{i.severity}</span></Td> },
+    { id: "desc", label: "Description", cell: i => <Cell>{i.desc}</Cell> },
+    { id: "resolution", label: "Resolution", cell: i => <Cell>{i.resolution}</Cell> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Incidents" subtitle="Reportable events and resolutions."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "incident" })}><Plus size={15} />Report incident</Btn></div>} />
     {data.incidents.length === 0 ? <Empty icon={AlertTriangle} label="No incidents" hint="A clean record is a good record." />
-      : <Table cols={["Date", "Aircraft", "Severity", "Description", "Resolution", ""]}>{data.incidents.map(i => <Row key={i.id}>
-        <Cell mono>{i.date}</Cell><Cell mono>{nameOf("aircraft", i.aircraft)}</Cell><Td><span className="rounded-full px-2 py-0.5 text-xs" style={{ background: (i.severity === "Major" ? "#f43f5e" : i.severity === "Moderate" ? "#f59e0b" : "#64748b") + "26", color: i.severity === "Major" ? "#f43f5e" : i.severity === "Moderate" ? "#f59e0b" : "#94a3b8" }}>{i.severity}</span></Td><Cell>{i.desc}</Cell><Cell>{i.resolution}</Cell>
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{data.incidents.map(i => <Row key={i.id}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(i)}</React.Fragment>)}
         <Td><RowActions onEdit={() => setModal({ type: "incident", item: i })} onDelete={() => remove("incidents", i.id)} /></Td></Row>)}</Table>}</>);
 }
-function Aircraft({ data, setModal, remove, highlight }) {
+function Aircraft({ data, setModal, remove, highlight, setSetting }) {
   const now = new Date();
   const hlRef = useHighlightScroll(highlight);
-  return (<><PageHeader title="Aircraft" subtitle="Fleet register." action={<Btn variant="primary" onClick={() => setModal({ type: "aircraft" })}><Plus size={15} />Add aircraft</Btn>} />
-    <Table cols={["Tail / ID", "Model", "Serial", "Hours", "Cycles", "FAA Reg", "Reg exp", "Next Mx", "Status", ""]}>{data.aircraft.map(a => {
-      const mx = mxDue(a, now); const regD = daysUntil(a.regExp, now);
-      const regCls = regD == null ? "t3" : regD < 0 ? "text-rose-400" : regD < 60 ? "text-amber-400" : "t3";
+  const { hidden, toggle, resetCols } = useHiddenColumns("aircraft", data, setSetting);
+  const columns = [
+    { id: "tail", label: "Tail / ID", cell: a => <Cell mono>{a.tail}</Cell> },
+    { id: "model", label: "Model", cell: a => <Cell>{a.model}</Cell> },
+    { id: "serial", label: "Serial", cell: a => <Cell mono>{a.serial}</Cell> },
+    { id: "hours", label: "Hours", cell: a => <Cell mono>{a.hours}</Cell> },
+    { id: "cycles", label: "Cycles", cell: a => <Cell mono>{a.cycles}</Cell> },
+    { id: "faareg", label: "FAA Reg", cell: a => <Cell mono>{a.faaReg || "—"}</Cell> },
+    { id: "regexp", label: "Reg exp", cell: a => { const regD = daysUntil(a.regExp, now); const regCls = regD == null ? "t3" : regD < 0 ? "text-rose-400" : regD < 60 ? "text-amber-400" : "t3";
+      return <Td><span className={`font-mono text-xs ${regCls}`}>{a.regExp || "—"}</span></Td>; } },
+    { id: "nextmx", label: "Next Mx", cell: a => { const mx = mxDue(a, now); return <Td>{mx ? <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: mx.tone === "rose" ? "#f43f5e" : "#f59e0b" }}>
+      <Wrench size={12} />{mx.items[0].overdue ? "Overdue" : `${Math.max(0, Math.round(mx.items[0].remaining))} ${mx.items[0].unit}`}</span> : <span className="text-xs t4">OK</span>}</Td>; } },
+    { id: "status", label: "Status", cell: a => <Td><Badge value={a.status} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Aircraft" subtitle="Fleet register."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "aircraft" })}><Plus size={15} />Add aircraft</Btn></div>} />
+    <Table cols={[...visCols.map(c => c.label), ""]}>{data.aircraft.map(a => {
       const hl = highlight?.coll === "aircraft" && highlight.id === a.id;
       return <Row key={a.id} hl={hl} innerRef={hl ? hlRef : null}>
-      <Cell mono>{a.tail}</Cell><Cell>{a.model}</Cell><Cell mono>{a.serial}</Cell><Cell mono>{a.hours}</Cell><Cell mono>{a.cycles}</Cell>
-      <Cell mono>{a.faaReg || "—"}</Cell><Td><span className={`font-mono text-xs ${regCls}`}>{a.regExp || "—"}</span></Td>
-      <Td>{mx ? <span className="inline-flex items-center gap-1.5 text-xs font-medium" style={{ color: mx.tone === "rose" ? "#f43f5e" : "#f59e0b" }}>
-        <Wrench size={12} />{mx.items[0].overdue ? "Overdue" : `${Math.max(0, Math.round(mx.items[0].remaining))} ${mx.items[0].unit}`}</span> : <span className="text-xs t4">OK</span>}</Td>
-      <Td><Badge value={a.status} /></Td>
+      {visCols.map(c => <React.Fragment key={c.id}>{c.cell(a)}</React.Fragment>)}
       <Td><RowActions onEdit={() => setModal({ type: "aircraft", item: a })} onDelete={() => remove("aircraft", a.id)} /></Td></Row>; })}</Table></>);
 }
-function Batteries({ data, setModal, remove }) {
-  return (<><PageHeader title="Batteries" subtitle="Pack inventory and health." action={<Btn variant="primary" onClick={() => setModal({ type: "battery" })}><Plus size={15} />Add battery</Btn>} />
-    <Table cols={["Label", "Chemistry", "Capacity (Wh)", "Cycles / limit", "Health", "Status", ""]}>{data.batteries.map(b => { const over = b.cycleLimit && b.cycles >= b.cycleLimit, near = b.cycleLimit && !over && b.cycles >= b.cycleLimit * 0.9; return <Row key={b.id}>
-      <Cell mono>{b.label}</Cell><Cell>{b.chem}</Cell><Cell mono>{b.capacity}</Cell>
-      <Td><span className="font-mono text-xs" style={{ color: over ? "#f43f5e" : near ? "#f59e0b" : "var(--t3)" }}>{b.cycles}{b.cycleLimit ? ` / ${b.cycleLimit}` : ""}</span></Td>
-      <Td><div className="flex items-center gap-2"><div className="h-1.5 w-16 overflow-hidden rounded sf2"><div className="h-full" style={{ width: `${b.health}%`, background: b.health > 85 ? "#1776bb" : b.health > 70 ? "#f59e0b" : "#f43f5e" }} /></div><span className="font-mono text-xs t3">{Math.round(b.health)}%</span></div></Td>
-      <Td><Badge value={b.status} /></Td><Td><RowActions onEdit={() => setModal({ type: "battery", item: b })} onDelete={() => remove("batteries", b.id)} /></Td></Row>; })}</Table></>);
+function Batteries({ data, setModal, remove, setSetting }) {
+  const { hidden, toggle, resetCols } = useHiddenColumns("batteries", data, setSetting);
+  const columns = [
+    { id: "label", label: "Label", cell: b => <Cell mono>{b.label}</Cell> },
+    { id: "chem", label: "Chemistry", cell: b => <Cell>{b.chem}</Cell> },
+    { id: "capacity", label: "Capacity (Wh)", cell: b => <Cell mono>{b.capacity}</Cell> },
+    { id: "cycles", label: "Cycles / limit", cell: b => { const over = b.cycleLimit && b.cycles >= b.cycleLimit, near = b.cycleLimit && !over && b.cycles >= b.cycleLimit * 0.9;
+      return <Td><span className="font-mono text-xs" style={{ color: over ? "#f43f5e" : near ? "#f59e0b" : "var(--t3)" }}>{b.cycles}{b.cycleLimit ? ` / ${b.cycleLimit}` : ""}</span></Td>; } },
+    { id: "health", label: "Health", cell: b => <Td><div className="flex items-center gap-2"><div className="h-1.5 w-16 overflow-hidden rounded sf2"><div className="h-full" style={{ width: `${b.health}%`, background: b.health > 85 ? "#1776bb" : b.health > 70 ? "#f59e0b" : "#f43f5e" }} /></div><span className="font-mono text-xs t3">{Math.round(b.health)}%</span></div></Td> },
+    { id: "status", label: "Status", cell: b => <Td><Badge value={b.status} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Batteries" subtitle="Pack inventory and health."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "battery" })}><Plus size={15} />Add battery</Btn></div>} />
+    <Table cols={[...visCols.map(c => c.label), ""]}>{data.batteries.map(b => <Row key={b.id}>
+      {visCols.map(c => <React.Fragment key={c.id}>{c.cell(b)}</React.Fragment>)}
+      <Td><RowActions onEdit={() => setModal({ type: "battery", item: b })} onDelete={() => remove("batteries", b.id)} /></Td></Row>)}</Table></>);
 }
 function Workflows({ data, setModal, remove }) {
   return (<><PageHeader title="Workflows" subtitle="Standard operating sequences." action={<Btn variant="primary" onClick={() => setModal({ type: "workflow" })}><Plus size={15} />New workflow</Btn>} />
@@ -1696,13 +1872,25 @@ function Workflows({ data, setModal, remove }) {
           <span className="rounded-md border bd sf2 px-2.5 py-1 text-xs t2"><span className="mr-1.5 font-mono t4">{String(i + 1).padStart(2, "0")}</span>{s}</span>
           {i < w.steps.length - 1 && <ChevronRight size={13} className="t4" />}</React.Fragment>)}</div></div>)}</div>}</>);
 }
-function UsersView({ data, setModal, remove, highlight }) {
+function UsersView({ data, setModal, remove, highlight, setSetting }) {
   const hlRef = useHighlightScroll(highlight);
-  return (<><PageHeader title="Users" subtitle="Operators and crew." action={<Btn variant="primary" onClick={() => setModal({ type: "user" })}><Plus size={15} />Add user</Btn>} />
-    <Table cols={["Name", "Role", "Certification", "Cert expiry", "Status", ""]}>{data.users.map(u => { const exp = new Date(u.certExp) < new Date();
+  const { hidden, toggle, resetCols } = useHiddenColumns("users", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: u => <Cell>{u.name}</Cell> },
+    { id: "role", label: "Role", cell: u => <Cell>{u.role}</Cell> },
+    { id: "cert", label: "Certification", cell: u => <Cell>{u.cert}</Cell> },
+    { id: "certexp", label: "Cert expiry", cell: u => { const exp = new Date(u.certExp) < new Date(); return <Td><span className={`font-mono text-xs ${exp ? "text-rose-400" : "t3"}`}>{u.certExp}</span></Td>; } },
+    { id: "status", label: "Status", cell: u => <Td><Badge value={u.status === "Active" ? "Available" : "Storage"} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Users" subtitle="Operators and crew."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn variant="primary" onClick={() => setModal({ type: "user" })}><Plus size={15} />Add user</Btn></div>} />
+    <Table cols={[...visCols.map(c => c.label), ""]}>{data.users.map(u => {
       const hl = highlight?.coll === "users" && highlight.id === u.id;
-      return <Row key={u.id} hl={hl} innerRef={hl ? hlRef : null}><Cell>{u.name}</Cell><Cell>{u.role}</Cell><Cell>{u.cert}</Cell><Td><span className={`font-mono text-xs ${exp ? "text-rose-400" : "t3"}`}>{u.certExp}</span></Td><Td><Badge value={u.status === "Active" ? "Available" : "Storage"} /></Td>
-        <Td><RowActions onEdit={() => setModal({ type: "user", item: u })} onDelete={() => remove("users", u.id)} /></Td></Row>; })}</Table></>);
+      return <Row key={u.id} hl={hl} innerRef={hl ? hlRef : null}>
+      {visCols.map(c => <React.Fragment key={c.id}>{c.cell(u)}</React.Fragment>)}
+      <Td><RowActions onEdit={() => setModal({ type: "user", item: u })} onDelete={() => remove("users", u.id)} /></Td></Row>; })}</Table></>);
 }
 
 /* ============================ modal forms ============================ */
