@@ -1,5 +1,9 @@
 # FlightOps — UAS Ops Console
 
+[![Latest release](https://img.shields.io/github/v/release/ihr0s22/FlightOps-UAS)](https://github.com/ihr0s22/FlightOps-UAS/releases)
+[![License: Apache-2.0](https://img.shields.io/github/license/ihr0s22/FlightOps-UAS)](./LICENSE)
+[![Deploy](https://github.com/ihr0s22/FlightOps-UAS/actions/workflows/deploy.yml/badge.svg)](https://github.com/ihr0s22/FlightOps-UAS/actions/workflows/deploy.yml)
+
 A **local-first** drone / UAS (Unmanned Aircraft System) operations console that runs entirely in your
 browser. Plan missions, log flights, track your fleet and batteries, manage Part 107 compliance, schedule
 crews, and watch live airspace & telemetry — with **all data stored on your own device**.
