@@ -1,0 +1,21 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+  relay:
+    build: ./relay
+    ports:
+      - "8787:8787"
+    environment:
+      # Locked to the app's own origin by default since this is meant for personal/LAN use,
+      # not a publicly reachable relay. Widen if you're hitting it from a different host/port.
+      ALLOWED_ORIGIN: "http://localhost:8080"
+    volumes:
+      - relay-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  relay-data:

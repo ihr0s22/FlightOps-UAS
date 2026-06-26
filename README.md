@@ -1,14 +1,14 @@
-# FlightDeck — UAS Ops Console
+# FlightOps — UAS Ops Console
 
 A **local-first** drone / UAS (Unmanned Aircraft System) operations console that runs entirely in your
 browser. Plan missions, log flights, track your fleet and batteries, manage Part 107 compliance, schedule
 crews, and watch live airspace & telemetry — with **all data stored on your own device**.
 
-> **Privacy by design:** FlightDeck has no backend and no account. Your records live in your browser
+> **Privacy by design:** FlightOps has no backend and no account. Your records live in your browser
 > (`localStorage`) and, optionally, in a local folder you choose. Nothing is uploaded to a server unless
 > you explicitly connect one.
 
-![FlightDeck dashboard — mission, fleet, compliance, and alerts at a glance](docs/screenshot.png)
+![FlightOps dashboard — mission, fleet, compliance, and alerts at a glance](docs/screenshot.png)
 
 **Live demo:** [ihr0s22.github.io/FlightOps-UAS](https://ihr0s22.github.io/FlightOps-UAS/)
 
@@ -19,7 +19,7 @@ crews, and watch live airspace & telemetry — with **all data stored on your ow
 - **Fleet & batteries** — registration, Remote ID, maintenance intervals, cycle-life tracking.
 - **Compliance** — Part 107 waivers / COAs and a document vault, with expiry alerts.
 - **Checklists, risk assessments, maintenance & incident logs.**
-- **Airspace** — live ADS-B traffic, sectional/aerial basemaps, and weather (Open-Meteo / METAR).
+- **Airspace** — live ADS-B traffic, street/aerial basemaps, and weather (Open-Meteo / METAR).
 - **OPS center** — live video (HLS/MJPEG/WebRTC) and normalized telemetry (Simulator / WebSocket / MQTT).
 - **Reporting** — build reports across entities, export CSV/PDF, schedule recurring exports.
 - **Resilient by default** — first-run chooser (empty vs. demo data), save-status indicator,
@@ -49,8 +49,9 @@ later from **Settings → Reset workspace**.
 ## Data & storage
 
 - **Browser storage (default):** all records are saved to `localStorage` automatically as you work.
-- **Local folder (optional, Chrome/Edge):** Settings → Storage → *Connect drive folder* writes a
-  `flightdeck.json` to a folder you pick (e.g. on an external drive) and reloads it on launch. This uses the
+- **Local folder (optional, Chrome/Edge):** Settings → Storage → *Connect a folder* writes a
+  `flightdeck.json` to any folder you pick — internal drive, external drive, or network share — and
+  reloads it on launch. This uses the
   [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_Access_API) and requires
   HTTPS (GitHub Pages qualifies).
 - **Export / Import:** Settings → Storage → *Export file* / *Import file* for manual backups and transfer
@@ -80,6 +81,26 @@ This repo includes a workflow at `.github/workflows/deploy.yml` that builds and 
 Asset paths are relative (`base: "./"` in `vite.config.js`), so it works on any subpath, custom domain, or
 other static host (Netlify, Vercel, Cloudflare Pages) — just run `npm run build` and serve `dist/`.
 
+## Self-hosting (Docker)
+
+For a fully private instance — no GitHub Pages, nothing public — `docker-compose.yml` runs the app
+(built and served via nginx) alongside the [relay](relay/README.md) that backs live ADS-B traffic and
+METAR weather:
+
+```bash
+docker compose up -d --build
+```
+
+- App: [http://localhost:8080](http://localhost:8080)
+- Relay: `http://localhost:8787` (the app's Settings → Relay & delivery is pre-pointed at this via
+  `ALLOWED_ORIGIN` in `docker-compose.yml` — update it if you're hosting on a different host/port)
+
+The relay's synced snapshots persist in a named volume (`relay-data`) across restarts. Stop everything
+with `docker compose down` (add `-v` to also wipe the relay's synced data).
+
+If you'd rather run just the static app without Docker, `Dockerfile`/`nginx.conf` aren't required —
+`npm run build && npm run preview` works the same way as the GitHub Pages build.
+
 ## Browser support
 
 Modern evergreen browsers. The optional *connect drive folder* feature needs Chromium-based browsers
@@ -94,5 +115,5 @@ Modern evergreen browsers. The optional *connect drive folder* feature needs Chr
 
 [Apache-2.0](./LICENSE) © 2026 Ian Rosario.
 
-> FlightDeck is an operations aid, not a system of record for regulatory filing. Always verify against
+> FlightOps is an operations aid, not a system of record for regulatory filing. Always verify against
 > official sources (FAA registration, LAANC, current charts/NOTAMs) before flight.
