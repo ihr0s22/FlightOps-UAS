@@ -8,6 +8,10 @@ crews, and watch live airspace & telemetry — with **all data stored on your ow
 > (`localStorage`) and, optionally, in a local folder you choose. Nothing is uploaded to a server unless
 > you explicitly connect one.
 
+![FlightDeck dashboard — mission, fleet, compliance, and alerts at a glance](docs/screenshot.png)
+
+**Live demo:** [ihr0s22.github.io/FlightOps-UAS](https://ihr0s22.github.io/FlightOps-UAS/)
+
 ## Features
 
 - **Missions & scheduling** — plan operations, assign crew/aircraft, calendar view with crew double-booking detection.
