@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, useId } from "react";
 import {
   Plane, Battery, Users, ClipboardCheck, ShieldAlert, Wrench, AlertTriangle,
   Map, Radio, Workflow, ListChecks, Plus, X, Search, Trash2, Pencil,
@@ -8,13 +8,13 @@ import {
   ArrowUpRight, Eye, Wifi, Sun, Moon, RefreshCw, Plus as PlusIcon, Minus, Link2,
   Server, Play, Square, Satellite, Plug, HardDrive, Upload,
   Calendar, CalendarDays, BadgeCheck, ChevronLeft,
-  FileText, Paperclip, ExternalLink, Sparkles, LayoutGrid, List, SlidersHorizontal
+  FileText, Paperclip, ExternalLink, Sparkles, LayoutGrid, List, SlidersHorizontal, Camera
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 /* ============================ persistence ============================ */
 const STORE_KEY = "droneops:v2";
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 const hasArtifactStore = typeof window !== "undefined" && window.storage && window.storage.get;
 const fsSupported = typeof window !== "undefined" && "showDirectoryPicker" in window;
 
@@ -93,6 +93,19 @@ function inkFor(hex) {
 const addDays = (dateStr, days) => { const d = new Date(dateStr); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const round2 = (v) => Math.round(v * 100) / 100;
+/* ============================ units ============================ */
+// Flight altitude/distance are stored canonically in metric (meters / km) regardless of the user's
+// Settings → Default units preference; these only convert at the display/input edges. Aviation-standard
+// units elsewhere (LAANC ceiling in ft, METAR wind in kt) are domain convention, not a user preference,
+// so they're intentionally left alone.
+const M_PER_FT = 0.3048, KM_PER_MI = 1.609344;
+const isImperial = (data) => data.settings.org?.units === "imperial";
+// Canonical meters/km -> the unit + label to display, given the current units preference.
+const dispAlt = (meters, data) => isImperial(data) ? { value: (meters || 0) / M_PER_FT, unit: "ft" } : { value: meters || 0, unit: "m" };
+const dispDist = (km, data) => isImperial(data) ? { value: (km || 0) / KM_PER_MI, unit: "mi" } : { value: km || 0, unit: "km" };
+// Display-unit input value -> canonical meters/km for storage.
+const toAlt = (value, data) => isImperial(data) ? (+value || 0) * M_PER_FT : (+value || 0);
+const toDist = (value, data) => isImperial(data) ? (+value || 0) * KM_PER_MI : (+value || 0);
 // Health fade per charge cycle, scaled so a pack loses ~40 points across its rated cycle life.
 const healthPerCycle = (b) => 40 / (b.cycleLimit || 500);
 
@@ -120,6 +133,20 @@ function mxDue(a, now = new Date()) {
   if (!items.length) return null;
   items.sort((x, y) => x.remaining - y.remaining);
   return { items, tone: items.some(i => i.overdue) ? "rose" : "amber" };
+}
+
+/* Computed mission-readiness summary — checks each requirement against its actual linked record
+   (not just the mission's own quick-entry fields), so it stays correct as those records change.
+   Returns the missing requirement labels plus an overall tone; [] missing = ready. */
+function missionReadiness(m, data) {
+  const missing = [];
+  const hasRpic = (m.operators || []).some(id => data.users.find(u => u.id === id)?.role === "Remote PIC");
+  if (!hasRpic) missing.push("Assigned RPIC");
+  const laancOk = /not required/i.test(m.laanc || "") || (data.laanc || []).some(l => l.missionId === m.id && l.status === "Approved");
+  if (!laancOk) missing.push("LAANC");
+  const riskOk = (data.riskAssessments || []).some(r => r.missionId === m.id);
+  if (!riskOk) missing.push("Risk Assessment");
+  return { missing, ready: missing.length === 0 };
 }
 
 /* ============================ theme ============================ */
@@ -164,14 +191,20 @@ function seed() {
       { id: b2, label: "PK-12S-02", chem: "Li-ion 12S", capacity: 500, cycles: 88, health: 92, status: "Charged", cycleLimit: 800 },
       { id: b3, label: "PK-6S-07", chem: "LiPo 6S", capacity: 220, cycles: 210, health: 78, status: "Storage", cycleLimit: 200 },
     ],
+    equipment: [
+      { id: uid("EQ"), name: "Zenmuse H20T", category: "Camera", serial: "ZH20T-0091", status: "In use", aircraftId: a1, missionId: "", notes: "Thermal + zoom payload, gimbal-mounted." },
+      { id: uid("EQ"), name: "RTK ground station", category: "Ground Station", serial: "RTK-2240", status: "Available", aircraftId: "", missionId: m2, notes: "Base station for centimeter-level positioning." },
+      { id: uid("EQ"), name: "Spare TX16S controller", category: "Controller", serial: "TX16S-0512", status: "Storage", aircraftId: "", missionId: "", notes: "Backup transmitter, charged quarterly." },
+    ],
     users: [
       { id: u1, name: "Ava Reyes", role: "Remote PIC", cert: "Part 107", certExp: "2027-03-14", status: "Active" },
       { id: u2, name: "Daniel Okafor", role: "Visual Observer", cert: "Part 107", certExp: "2026-08-01", status: "Active" },
       { id: u3, name: "Priya Nair", role: "Remote PIC", cert: "Part 107", certExp: "2026-08-20", status: "Active" },
     ],
     missions: [
-      { id: m1, name: "Corridor Survey — Sector 4", date: "2026-06-25", location: "Rural corridor, grid R4", objective: "30 km cargo delivery validation run", status: "Planned", operators: [u1, u2], aircraft: [a1], laanc: "Not required (Class G)", risk: "Moderate" },
-      { id: m2, name: "Coastal Inspection", date: "2026-06-23", location: "Pier 9 waterfront", objective: "Infrastructure imaging", status: "Active", operators: [u3], aircraft: [a2], laanc: "Approved", risk: "Low" },
+      { id: m1, name: "Corridor Survey — Sector 4", date: "2026-06-25", location: "Rural corridor, grid R4", objective: "30 km cargo delivery validation run", status: "Planned", operators: [u1, u2], aircraft: [a1], laanc: "Not required (Class G)", risk: "Moderate", lat: 39.02, lon: -77.48,
+        geofence: [{ lat: 39.03, lon: -77.50 }, { lat: 39.04, lon: -77.46 }, { lat: 39.00, lon: -77.44 }, { lat: 38.99, lon: -77.49 }] },
+      { id: m2, name: "Coastal Inspection", date: "2026-06-23", location: "Pier 9 waterfront", objective: "Infrastructure imaging", status: "Active", operators: [u3], aircraft: [a2], laanc: "Approved", risk: "Low", lat: 38.90, lon: -77.40, geofence: [] },
     ],
     flights: [
       { id: f1, missionId: m2, date: "2026-06-23", operator: u3, aircraft: a2, batteries: [b1], dur: 18, maxAlt: 120, dist: 4.2, location: "Pier 9", status: "Completed", notes: "Clean run, light crosswind." },
@@ -190,7 +223,7 @@ function seed() {
     ],
     maintenance: [{ id: uid("MX"), aircraft: a3, date: "2026-04-02", type: "Inspection", desc: "Arm vibration check — replaced motor mount.", tech: "Daniel Okafor" }],
     incidents: [{ id: uid("INC"), date: "2026-05-12", aircraft: a3, severity: "Minor", desc: "Hard landing during gust.", resolution: "Inspected, grounded pending mount replacement." }],
-    riskAssessments: [{ id: uid("RA"), name: "30 km rural corridor", date: "2026-06-20", level: "Moderate", hazards: "Loss of GNSS over corridor; bird activity.", mitigations: "VIO + baro fallback; pre-survey corridor." }],
+    riskAssessments: [{ id: uid("RA"), missionId: m1, name: "30 km rural corridor", date: "2026-06-20", level: "Moderate", hazards: "Loss of GNSS over corridor; bird activity.", mitigations: "VIO + baro fallback; pre-survey corridor." }],
     checklists: [{ id: cl1, name: "Pre-flight — L-class", items: ["Visual airframe inspection", "Prop security & condition", "Battery health > 90%", "GNSS lock + RTH set", "Payload secured & balanced", "Airspace / LAANC confirmed"].map(t => ({ t, done: false })) }],
     checklistRuns: [{ id: uid("CR"), flightId: f2, missionId: m1, checklistId: cl1, name: "Pre-flight — L-class", date: "2026-06-15", by: u1, complete: true,
       items: ["Visual airframe inspection", "Prop security & condition", "Battery health > 90%", "GNSS lock + RTH set", "Payload secured & balanced", "Airspace / LAANC confirmed"].map(t => ({ t, done: true })) }],
@@ -204,6 +237,8 @@ function seed() {
       telemetry: { source: "sim", wsUrl: "", mqttUrl: "", mqttTopic: "uas/+/telemetry" },
       relay: { url: "" },
       columns: {},   // per-view list of hidden column ids, e.g. { flights: ["dist"] } — absent/empty = all shown
+      rolePermissions: {},   // per-role overrides merged over DEFAULT_ROLE_PERMISSIONS
+      currentUserId: "",     // "" = no one signed in -> unrestricted (full access); preserves prior behavior
     },
     version: SCHEMA_VERSION,
   };
@@ -213,7 +248,7 @@ function seed() {
 function emptyWorkspace() {
   const base = seed();
   const blank = {};
-  ["aircraft", "batteries", "users", "missions", "flights", "laanc", "waivers", "documents",
+  ["aircraft", "batteries", "equipment", "users", "missions", "flights", "laanc", "waivers", "documents",
     "maintenance", "incidents", "riskAssessments", "checklists", "checklistRuns", "workflows", "scheduledReports"]
     .forEach(k => { blank[k] = []; });
   return { ...base, ...blank, version: SCHEMA_VERSION };
@@ -249,6 +284,11 @@ function migrate(s) {
     // v4 → v5: centralized document vault (uploaded files or external references).
     if (!Array.isArray(out.documents)) out.documents = [];
   }
+  if (from < 6) {
+    // v5 → v6: payload/equipment inventory, plus mission geofences for flight planning.
+    if (!Array.isArray(out.equipment)) out.equipment = [];
+    out.missions = (out.missions || []).map(m => ({ geofence: [], ...m }));
+  }
   out.version = SCHEMA_VERSION;
   return out;
 }
@@ -259,6 +299,7 @@ function ensure(s) {
   out.checklistRuns = Array.isArray(src.checklistRuns) ? src.checklistRuns : (s ? [] : base.checklistRuns);
   out.waivers = Array.isArray(src.waivers) ? src.waivers : (s ? [] : base.waivers);
   out.documents = Array.isArray(src.documents) ? src.documents : (s ? [] : base.documents);
+  out.equipment = Array.isArray(src.equipment) ? src.equipment : (s ? [] : base.equipment);
   out.scheduledReports = src.scheduledReports || base.scheduledReports;
   out.settings = { ...base.settings, ...(src.settings || {}) };
   out.settings.org = { ...base.settings.org, ...(src.settings?.org || {}) };
@@ -268,6 +309,7 @@ function ensure(s) {
   out.settings.telemetry = { ...base.settings.telemetry, ...(src.settings?.telemetry || {}) };
   out.settings.relay = { ...base.settings.relay, ...(src.settings?.relay || {}) };
   out.settings.columns = { ...base.settings.columns, ...(src.settings?.columns || {}) };
+  out.settings.rolePermissions = { ...base.settings.rolePermissions, ...(src.settings?.rolePermissions || {}) };
   out.version = SCHEMA_VERSION;
   return out;
 }
@@ -281,7 +323,7 @@ const NAV = [
     { key: "maintenance", label: "Maintenance", icon: Wrench }, { key: "incidents", label: "Incidents", icon: AlertTriangle },
   ]},
   { group: "Compliance", items: [{ key: "waivers", label: "Waivers & COAs", icon: BadgeCheck }, { key: "documents", label: "Document Vault", icon: FileText }] },
-  { group: "Assets", items: [{ key: "aircraft", label: "Aircraft", icon: Plane }, { key: "batteries", label: "Batteries", icon: Battery }] },
+  { group: "Assets", items: [{ key: "aircraft", label: "Aircraft", icon: Plane }, { key: "batteries", label: "Batteries", icon: Battery }, { key: "equipment", label: "Equipment", icon: Camera }] },
   { group: "Procedures", items: [
     { key: "workflows", label: "Workflows", icon: Workflow }, { key: "proc-checklists", label: "Checklists", icon: ClipboardCheck }, { key: "proc-risk", label: "Risk Assessments", icon: ShieldAlert },
   ]},
@@ -294,6 +336,39 @@ const RAIL = [
   { key: "reporting", label: "Reporting", icon: FileBarChart }, { key: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
+/* ============================ roles & permissions ============================ */
+// Single source of truth for the crew Role dropdown — "Admin" is a role like any other (assignable to a
+// crew member), not a separate auth tier, since the app has no login/session of its own.
+const ROLES = ["Remote PIC", "Visual Observer", "Payload Operator", "Maintenance Tech", "Ops Manager", "Operations Supervisor", "Flight Coordinator", "Admin"];
+// Configurable capabilities. Each gates the create/edit/delete affordances for a group of manage views —
+// viewing/reporting stays open to everyone so permissions can't accidentally hide data, only mutation.
+const PERMISSIONS = [
+  { key: "manageOperations", label: "Operations", desc: "Missions, flights, LAANC, checklists, risk assessments, workflows" },
+  { key: "manageFleet", label: "Fleet", desc: "Aircraft, batteries, maintenance, incidents" },
+  { key: "manageCompliance", label: "Compliance", desc: "Waivers / COAs and the document vault" },
+  { key: "manageUsers", label: "Users", desc: "Crew roster" },
+  { key: "manageSettings", label: "Settings", desc: "Organization, integrations, storage, relay, reset" },
+];
+const ALL_PERMS_TRUE = Object.fromEntries(PERMISSIONS.map(p => [p.key, true]));
+const ALL_PERMS_FALSE = Object.fromEntries(PERMISSIONS.map(p => [p.key, false]));
+// Sensible defaults per role — editable per-role in Settings → Roles & access, overrides persisted in
+// settings.rolePermissions. Admin defaults to full access; everyone else is scoped to their lane.
+const DEFAULT_ROLE_PERMISSIONS = {
+  "Remote PIC": { ...ALL_PERMS_FALSE, manageOperations: true },
+  "Visual Observer": { ...ALL_PERMS_FALSE },
+  "Payload Operator": { ...ALL_PERMS_FALSE },
+  "Maintenance Tech": { ...ALL_PERMS_FALSE, manageFleet: true },
+  "Ops Manager": { ...ALL_PERMS_FALSE, manageOperations: true, manageFleet: true, manageCompliance: true },
+  "Operations Supervisor": { ...ALL_PERMS_FALSE, manageOperations: true, manageFleet: true, manageCompliance: true, manageUsers: true },
+  "Flight Coordinator": { ...ALL_PERMS_FALSE, manageOperations: true },
+  "Admin": { ...ALL_PERMS_TRUE },
+};
+// Default permission set merged with any per-role overrides saved in settings.
+function rolePermissions(role, settings) {
+  const def = DEFAULT_ROLE_PERMISSIONS[role] || ALL_PERMS_FALSE;
+  return { ...def, ...(settings.rolePermissions?.[role] || {}) };
+}
+
 /* ============================ status / primitives ============================ */
 const BASE = {
   Planned: "#64748b", Active: "#f59e0b", Completed: "#1776bb", Cancelled: "#f43f5e",
@@ -305,12 +380,19 @@ function Badge({ value }) {
   return <span className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
     style={{ background: c + "26", color: c }}><span className="h-1.5 w-1.5 rounded-full" style={{ background: c }} />{value}</span>;
 }
-function Btn({ children, onClick, variant = "ghost", className = "", type = "button", disabled = false }) {
+function Btn({ children, onClick, variant = "ghost", className = "", type = "button", disabled = false, ...rest }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors";
   const dis = disabled ? "opacity-40 pointer-events-none" : "";
-  if (variant === "primary") return <button type={type} disabled={disabled} onClick={onClick} className={`${base} accbg font-semibold ${dis} ${className}`}>{children}</button>;
-  if (variant === "danger") return <button type={type} disabled={disabled} onClick={onClick} className={`${base} border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 ${dis} ${className}`}>{children}</button>;
-  return <button type={type} disabled={disabled} onClick={onClick} className={`${base} sf2 bd border t2 hov ${dis} ${className}`}>{children}</button>;
+  if (variant === "primary") return <button type={type} disabled={disabled} onClick={onClick} className={`${base} accbg font-semibold ${dis} ${className}`} {...rest}>{children}</button>;
+  if (variant === "danger") return <button type={type} disabled={disabled} onClick={onClick} className={`${base} border border-rose-500/40 text-rose-400 hover:bg-rose-500/10 ${dis} ${className}`} {...rest}>{children}</button>;
+  return <button type={type} disabled={disabled} onClick={onClick} className={`${base} sf2 bd border t2 hov ${dis} ${className}`} {...rest}>{children}</button>;
+}
+// Icon-only button — same visual language as Btn, but `label` is required and becomes both the
+// accessible name (aria-label) and the visible tooltip (title), since icon-only controls have no
+// visible text to provide either on their own.
+function IconBtn({ children, onClick, label, variant = "ghost", className = "", ...rest }) {
+  const tones = { ghost: "rounded p-1.5 t4 hov hover:opacity-90", danger: "rounded p-1.5 t4 hover:bg-rose-500/15 hover:text-rose-400" };
+  return <button type="button" onClick={onClick} aria-label={label} title={label} className={`${tones[variant] || tones.ghost} ${className}`} {...rest}>{children}</button>;
 }
 function Field({ label, children }) {
   return <label className="block"><span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">{label}</span>{children}</label>;
@@ -319,13 +401,43 @@ const TextInput = (p) => <input {...p} className="ipt" />;
 const Select = ({ children, ...p }) => <select {...p} className="ipt">{children}</select>;
 const TextArea = (p) => <textarea {...p} className="ipt" style={{ minHeight: 80, resize: "vertical" }} />;
 
+// Shared modal accessibility: focuses the dialog on open, traps Tab/Shift+Tab inside it, closes on
+// Escape, locks page scroll while open, and restores focus to whatever triggered it on close. Used by
+// both Modal and ConfirmDialog instead of each re-implementing this.
+function useModalA11y(onClose) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const prevFocus = document.activeElement;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const focusables = () => ref.current
+      ? [...ref.current.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(el => !el.disabled)
+      : [];
+    (focusables()[0] || ref.current)?.focus();
+    const onKey = (e) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key !== "Tab") return;
+      const list = focusables();
+      if (!list.length) return;
+      const first = list[0], last = list[list.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prevOverflow; prevFocus?.focus?.(); };
+  }, [onClose]);
+  return ref;
+}
 function Modal({ title, onClose, children, onSave, saveLabel = "Save" }) {
+  const titleId = useId();
+  const ref = useModalA11y(onClose);
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 sm:p-8" onClick={onClose}>
-      <div className="my-auto w-full max-w-lg rounded-xl border bd shadow-2xl" style={{ background: "var(--modal)" }} onClick={e => e.stopPropagation()}>
+      <div ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        className="my-auto w-full max-w-lg rounded-xl border bd shadow-2xl outline-none" style={{ background: "var(--modal)" }} onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between border-b bd px-5 py-3.5">
-          <h3 className="text-sm font-semibold t1">{title}</h3>
-          <button onClick={onClose} className="t3 hover:opacity-70"><X size={18} /></button>
+          <h3 id={titleId} className="text-sm font-semibold t1">{title}</h3>
+          <IconBtn onClick={onClose} label="Close"><X size={18} /></IconBtn>
         </div>
         <div className="max-h-[65vh] overflow-y-auto px-5 py-4">{children}</div>
         <div className="flex justify-end gap-2 border-t bd px-5 py-3"><Btn onClick={onClose}>Cancel</Btn>{onSave && <Btn variant="primary" onClick={onSave}>{saveLabel}</Btn>}</div>
@@ -344,6 +456,7 @@ function collectRefs(data, coll, id) {
     push("Maintenance", data.maintenance.filter(m => m.aircraft === id).map(m => `${m.type} · ${m.date}`));
     push("Incidents", data.incidents.filter(i => i.aircraft === id).map(i => `${i.severity} · ${i.date}`));
     push("Documents", (data.documents || []).filter(dn => dn.linkedType === "aircraft" && dn.linkedId === id).map(dn => dn.name));
+    push("Equipment", (data.equipment || []).filter(e => e.aircraftId === id).map(e => e.name));
   } else {
     push("Missions", data.missions.filter(m => (m.operators || []).includes(id)).map(m => m.name));
     push("Flights", data.flights.filter(f => f.operator === id).map(f => f.date));
@@ -357,10 +470,13 @@ function ConfirmDialog({ data, confirm, onCancel, onConfirm }) {
     || (item?.date ? `${item.type || item.severity || "record"} · ${item.date}` : "this record");
   const refs = collectRefs(data, confirm.coll, confirm.id);
   const refCount = refs.reduce((n, g) => n + g.items.length, 0);
+  const titleId = useId();
+  const ref = useModalA11y(onCancel);
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={onCancel}>
-      <div className="w-full max-w-sm rounded-xl border bd shadow-2xl" style={{ background: "var(--modal)" }} onClick={e => e.stopPropagation()}>
-        <div className="flex items-center gap-2 border-b bd px-5 py-3.5"><AlertTriangle size={16} className="text-rose-400" /><h3 className="text-sm font-semibold t1">Delete?</h3></div>
+      <div ref={ref} role="alertdialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
+        className="w-full max-w-sm rounded-xl border bd shadow-2xl outline-none" style={{ background: "var(--modal)" }} onClick={e => e.stopPropagation()}>
+        <div className="flex items-center gap-2 border-b bd px-5 py-3.5"><AlertTriangle size={16} className="text-rose-400" /><h3 id={titleId} className="text-sm font-semibold t1">Delete?</h3></div>
         <div className="px-5 py-4 text-sm t2">
           Delete <span className="font-medium t1">{label}</span>?{refCount === 0 && " This can't be undone."}
           {refCount > 0 && <>
@@ -418,13 +534,25 @@ function useHiddenColumns(viewKey, data, setSetting) {
   return { hidden, toggle, resetCols };
 }
 // Dropdown for picking which columns a table shows. `columns` excludes the always-on actions column.
+// Closes an open dropdown on outside click or Escape — shared by ColumnsMenu and GlobalSearch instead
+// of each re-implementing the same listener.
+function useDismiss(open, close) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) close(); };
+    const onKey = e => { if (e.key === "Escape") close(); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open, close]);
+  return ref;
+}
 function ColumnsMenu({ columns, hidden, toggle, onReset }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => { const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
+  const ref = useDismiss(open, () => setOpen(false));
   return <div ref={ref} className="relative">
-    <Btn onClick={() => setOpen(o => !o)}><SlidersHorizontal size={13} />Columns</Btn>
+    <Btn onClick={() => setOpen(o => !o)} aria-expanded={open} aria-haspopup="true"><SlidersHorizontal size={13} />Columns</Btn>
     {open && <div className="absolute right-0 z-30 mt-1.5 w-56 rounded-xl border bd p-2 shadow-2xl" style={{ background: "var(--modal)" }}>
       <div className="flex items-center justify-between px-1.5 pb-1.5"><span className="text-[10px] font-semibold uppercase tracking-widest t4">Columns</span>
         <button onClick={onReset} className="text-[11px] acc hover:opacity-80">Show all</button></div>
@@ -438,8 +566,8 @@ function ColumnsMenu({ columns, hidden, toggle, onReset }) {
 }
 function RowActions({ onEdit, onDelete }) {
   return <div className="flex justify-end gap-1">
-    {onEdit && <button onClick={onEdit} className="rounded p-1.5 t4 hov hover:opacity-90"><Pencil size={14} /></button>}
-    {onDelete && <button onClick={onDelete} className="rounded p-1.5 t4 hover:bg-rose-500/15 hover:text-rose-400"><Trash2 size={14} /></button>}</div>;
+    {onEdit && <IconBtn onClick={onEdit} label="Edit"><Pencil size={14} /></IconBtn>}
+    {onDelete && <IconBtn variant="danger" onClick={onDelete} label="Delete"><Trash2 size={14} /></IconBtn>}</div>;
 }
 function Panel({ title, icon: Icon, children, right }) {
   return <div className="rounded-xl border bd sf"><div className="flex items-center justify-between border-b bd px-4 py-3">
@@ -521,6 +649,7 @@ function App() {
       out.maintenance = d.maintenance.map(m => m.aircraft === id ? { ...m, aircraft: "" } : m);
       out.incidents = d.incidents.map(i => i.aircraft === id ? { ...i, aircraft: "" } : i);
       out.documents = (d.documents || []).map(dn => dn.linkedType === "aircraft" && dn.linkedId === id ? { ...dn, linkedType: "", linkedId: "" } : dn);
+      out.equipment = (d.equipment || []).map(e => e.aircraftId === id ? { ...e, aircraftId: "" } : e);
     } else if (coll === "users") {
       out.missions = d.missions.map(m => ({ ...m, operators: (m.operators || []).filter(x => x !== id) }));
       out.flights = d.flights.map(f => f.operator === id ? { ...f, operator: "" } : f);
@@ -576,7 +705,7 @@ function App() {
   const resetWorkspace = useCallback(async () => { await clearState(); setHighlight(null); setData(null); setFirstRun(true); }, []);
   // Global search → jump to the record's manage view and flash it.
   const goSearch = useCallback((coll, id) => {
-    const v = { missions: "missions", flights: "flights", aircraft: "aircraft", users: "users" }[coll] || "missions";
+    const v = { missions: "missions", flights: "flights", aircraft: "aircraft", users: "users", equipment: "equipment" }[coll] || "missions";
     setTab("manage"); setView(v); setSearch(""); setHighlight({ coll, id });
   }, []);
 
@@ -594,14 +723,20 @@ function App() {
   const closeModal = () => setModal(null);
   const goManage = (v) => { setTab("manage"); setView(v); };
 
+  // No one "signed in" (the default) = unrestricted, so existing single-user workflows are unaffected
+  // until someone actively picks an "Acting as" user in Settings → Roles & access.
+  const currentUser = data.users.find(u => u.id === data.settings.currentUserId) || null;
+  const can = currentUser ? rolePermissions(currentUser.role, data.settings) : ALL_PERMS_TRUE;
+
   // Rail icons can be dragged into a custom order; the chosen order is persisted in settings.
   const railOrder = data.settings.railOrder && data.settings.railOrder.length === RAIL.length ? data.settings.railOrder : RAIL.map(r => r.key);
   const railItems = railOrder.map(k => RAIL.find(r => r.key === k)).filter(Boolean);
   const moveRailIcon = (fromKey, toKey) => {
     if (fromKey === toKey) return;
-    const order = railOrder.filter(k => k !== fromKey);
-    const idx = order.indexOf(toKey);
-    order.splice(idx, 0, fromKey);
+    const order = [...railOrder];
+    const fromIdx = order.indexOf(fromKey), toIdx = order.indexOf(toKey);
+    order.splice(fromIdx, 1);
+    order.splice(toIdx, 0, fromKey);
     setSetting(["railOrder"], order);
   };
 
@@ -609,19 +744,26 @@ function App() {
     <div data-theme={theme} className="flex min-h-screen w-full" style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", "--accent": accent, "--accent-ink": accentInk }}>
       <style>{THEME_CSS}</style>
 
-      <nav className="flex w-16 shrink-0 flex-col items-center gap-1 border-r bd rail py-3">
+      <nav aria-label="Primary" className="flex w-16 shrink-0 flex-col items-center gap-1 border-r bd rail py-3">
         <div className="mb-2 h-9 w-9 overflow-hidden rounded-md" title="Brand emblem">
           {logo
             ? <img src={logo} alt="Company logo" className="h-full w-full object-cover" />
             : <div className="grid h-full w-full place-items-center accbg"><Plane size={18} /></div>}
         </div>
-        {railItems.map(r => { const active = tab === r.key; const Icon = r.icon; const dragging = dragRailKey === r.key;
-          return <button key={r.key} onClick={() => setTab(r.key)} title={r.label}
+        {railItems.map((r, i) => { const active = tab === r.key; const Icon = r.icon; const dragging = dragRailKey === r.key;
+          return <button key={r.key} onClick={() => setTab(r.key)} title={r.label} aria-label={r.label} aria-current={active ? "page" : undefined}
             draggable
             onDragStart={(e) => { setDragRailKey(r.key); e.dataTransfer.effectAllowed = "move"; }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => { e.preventDefault(); if (dragRailKey) moveRailIcon(dragRailKey, r.key); setDragRailKey(null); }}
             onDragEnd={() => setDragRailKey(null)}
+            onKeyDown={(e) => {
+              // Alt+Left/Right reorders this tab — a keyboard equivalent to the mouse-only drag-and-drop above.
+              if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+              e.preventDefault();
+              const neighbor = railItems[e.key === "ArrowRight" ? i + 1 : i - 1];
+              if (neighbor) moveRailIcon(r.key, neighbor.key);
+            }}
             className={`relative flex h-11 w-11 flex-col items-center justify-center rounded-lg transition-colors cursor-grab active:cursor-grabbing ${active ? "accsoft" : "t4 hov"} ${dragging ? "opacity-40" : ""}`}>
             {active && <span className="absolute left-0 h-6 w-0.5 -translate-x-2 rounded-full" style={{ background: "var(--accent)" }} />}
             <Icon size={19} /><span className="mt-0.5 text-[8px] font-medium uppercase tracking-wide">{r.label.split(" ")[0]}</span></button>; })}
@@ -633,7 +775,7 @@ function App() {
           <div className="flex-1 overflow-y-auto px-3 pb-6">{NAV.map(grp => (
             <div key={grp.group} className="mb-1"><div className="px-2 py-2 text-[10px] font-semibold uppercase tracking-widest t4">{grp.group}</div>
               {grp.items.map(it => { const active = view === it.key; const Icon = it.icon;
-                return <button key={it.key} onClick={() => { setView(it.key); setSearch(""); }}
+                return <button key={it.key} onClick={() => { setView(it.key); setSearch(""); }} aria-current={active ? "page" : undefined}
                   className={`mb-0.5 flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-sm transition-colors ${active ? "accsoft font-medium" : "t3 hov"}`}>
                   <Icon size={16} className={active ? "acc" : "t4"} />{it.label}</button>; })}
             </div>))}</div>
@@ -641,31 +783,32 @@ function App() {
 
       <main className="flex-1 overflow-x-hidden">
         {tab === "manage" && <div className="flex items-center gap-2 overflow-x-auto border-b bd sf2 px-3 py-2 md:hidden">
-          {NAV.flatMap(g => g.items).map(it => <button key={it.key} onClick={() => setView(it.key)}
+          {NAV.flatMap(g => g.items).map(it => <button key={it.key} onClick={() => setView(it.key)} aria-current={view === it.key ? "page" : undefined}
             className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs ${view === it.key ? "accsoft" : "t3"}`}>{it.label}</button>)}</div>}
 
         <div className="mx-auto max-w-6xl px-5 py-6">
           {tab === "home" && <Home {...{ data, nameOf, goManage, setSetting }} />}
           {tab === "schedule" && <Schedule {...{ data, nameOf, setModal, goManage }} />}
-          {tab === "airspace" && <Airspace {...{ data, setSetting }} />}
+          {tab === "airspace" && <Airspace {...{ data, setSetting }} onSelectMission={id => goSearch("missions", id)} />}
           {tab === "ops" && <OpsCenter {...{ data, nameOf, setSetting }} />}
           {tab === "reporting" && <Reporting {...{ data, nameOf, update }} />}
-          {tab === "settings" && <Settings {...{ data, setData, setSetting, onReset: resetWorkspace }} />}
+          {tab === "settings" && <Settings {...{ data, setData, setSetting, onReset: resetWorkspace, can }} />}
           {tab === "manage" && <>
             <div className="mb-5"><GlobalSearch data={data} nameOf={nameOf} onPick={goSearch} /></div>
-            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight, setSetting }} />}
-            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight, setSetting }} />}
-            {view === "laanc" && <Laanc {...{ data, setModal, remove, setSetting }} />}
-            {view === "waivers" && <Waivers {...{ data, setModal, remove, setSetting }} />}
-            {view === "documents" && <Documents {...{ data, setModal, remove, setSetting }} />}
-            {(view === "checklists" || view === "proc-checklists") && <Checklists {...{ data, setModal, remove, update }} />}
-            {(view === "risk" || view === "proc-risk") && <RiskList {...{ data, setModal, remove }} />}
-            {view === "maintenance" && <Maintenance {...{ data, setModal, remove, nameOf, setSetting }} />}
-            {view === "incidents" && <Incidents {...{ data, setModal, remove, nameOf, setSetting }} />}
-            {view === "aircraft" && <Aircraft {...{ data, setModal, remove, highlight, setSetting }} />}
-            {view === "batteries" && <Batteries {...{ data, setModal, remove, setSetting }} />}
-            {view === "workflows" && <Workflows {...{ data, setModal, remove }} />}
-            {view === "users" && <UsersView {...{ data, setModal, remove, highlight, setSetting }} />}
+            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight, setSetting }} can={can.manageOperations} />}
+            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight, setSetting }} can={can.manageOperations} />}
+            {view === "laanc" && <Laanc {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
+            {view === "waivers" && <Waivers {...{ data, setModal, remove, setSetting }} can={can.manageCompliance} />}
+            {view === "documents" && <Documents {...{ data, setModal, remove, setSetting }} can={can.manageCompliance} />}
+            {(view === "checklists" || view === "proc-checklists") && <Checklists {...{ data, setModal, remove, update, setSetting }} can={can.manageOperations} />}
+            {(view === "risk" || view === "proc-risk") && <RiskList {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
+            {view === "maintenance" && <Maintenance {...{ data, setModal, remove, nameOf, setSetting, upsert }} can={can.manageFleet} />}
+            {view === "incidents" && <Incidents {...{ data, setModal, remove, nameOf, setSetting, upsert }} can={can.manageFleet} />}
+            {view === "aircraft" && <Aircraft {...{ data, setModal, remove, highlight, setSetting, upsert }} can={can.manageFleet} />}
+            {view === "batteries" && <Batteries {...{ data, setModal, remove, setSetting, upsert }} can={can.manageFleet} />}
+            {view === "equipment" && <Equipment {...{ data, setModal, remove, nameOf, highlight, setSetting, upsert }} can={can.manageFleet} />}
+            {view === "workflows" && <Workflows {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
+            {view === "users" && <UsersView {...{ data, setModal, remove, highlight, setSetting, upsert }} can={can.manageUsers} />}
           </>}
         </div>
       </main>
@@ -767,7 +910,7 @@ function Home({ data, nameOf, goManage, setSetting }) {
             <span className="font-mono text-xs t3">{m.location}</span></div>)}
           {inFlight.map(f => <div key={f.id} className="flex items-center justify-between border-b bd px-4 py-3 last:border-0">
             <div className="flex items-center gap-2 text-sm t2"><Plane size={14} className="text-amber-400" />In flight: {nameOf("aircraft", f.aircraft)}</div>
-            <span className="font-mono text-xs t3">{f.maxAlt} m · {f.dist} km</span></div>)}</div>
+            <span className="font-mono text-xs t3">{dispAlt(f.maxAlt, data).value.toFixed(0)} {dispAlt(f.maxAlt, data).unit} · {dispDist(f.dist, data).value.toFixed(1)} {dispDist(f.dist, data).unit}</span></div>)}</div>
       </div>
       <div className="rounded-xl border bd sf">
         <div className="border-b bd px-4 py-3"><h3 className="flex items-center gap-2 text-sm font-semibold t1"><CircleAlert size={15} className="text-amber-400" />Alerts {alerts.length > 0 && <span className="rounded-full bg-amber-400/15 px-1.5 text-xs text-amber-500">{alerts.length}</span>}</h3></div>
@@ -785,7 +928,7 @@ function Home({ data, nameOf, goManage, setSetting }) {
         <div>{recent.length === 0 && <div className="px-4 py-8 text-center text-sm t4">No flights logged yet.</div>}
           {recent.map(f => <div key={f.id} className="flex items-center justify-between border-b bd px-4 py-2.5 text-sm last:border-0">
             <div className="flex items-center gap-3"><span className="font-mono text-xs t4">{f.date}</span><span className="t2">{nameOf("aircraft", f.aircraft)}</span><span className="t4">·</span><span className="t3">{nameOf("users", f.operator)}</span></div>
-            <div className="flex items-center gap-3 font-mono text-xs t3"><span>{f.dur}m</span><span>{f.maxAlt}m</span><Badge value={f.status} /></div></div>)}</div>
+            <div className="flex items-center gap-3 font-mono text-xs t3"><span>{f.dur}m</span><span>{dispAlt(f.maxAlt, data).value.toFixed(0)}{dispAlt(f.maxAlt, data).unit}</span><Badge value={f.status} /></div></div>)}</div>
       </div>
       <div className="rounded-xl border bd sf p-4"><h3 className="mb-3 text-sm font-semibold t1">Quick actions</h3><div className="grid gap-2">
         {[{ l: "New mission", v: "missions", i: Map }, { l: "Log a flight", v: "flights", i: Plane }, { l: "Run a checklist", v: "checklists", i: ListChecks }, { l: "Report an incident", v: "incidents", i: AlertTriangle }].map(q => (
@@ -897,7 +1040,7 @@ const lat2t = (lat, z) => (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math
 const t2lon = (x, z) => x / 2 ** z * 360 - 180;
 const t2lat = (y, z) => { const n = Math.PI - 2 * Math.PI * y / 2 ** z; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); };
 
-function TileMap({ basemap, center, zoom, markers, onPan }) {
+function TileMap({ basemap, center, zoom, markers, onPan, polygons = [] }) {
   const ref = useRef(null);
   const [size, setSize] = useState({ w: 640, h: 360 });
   const drag = useRef(null);
@@ -923,15 +1066,40 @@ function TileMap({ basemap, center, zoom, markers, onPan }) {
     {tiles.map(t => <img key={`${t.tx}-${t.ty}`} alt="" draggable={false} src={(TILE[basemap] || TILE.street).url(z, t.tx, t.ty)}
       onError={e => { e.currentTarget.style.visibility = "hidden"; }}
       style={{ position: "absolute", left: t.px, top: t.py, width: 256, height: 256, pointerEvents: "none" }} />)}
+    {/* Mission flight-planning areas — reuses the same proj() math as markers, so this isn't a second map system. */}
+    {polygons.length > 0 && <svg className="pointer-events-none absolute left-0 top-0" width={size.w} height={size.h}>
+      {polygons.map((poly, i) => poly.points.length >= 3 && <polygon key={i}
+        points={poly.points.map(p => { const pt = proj(p.lat, p.lon); return `${pt.left},${pt.top}`; }).join(" ")}
+        fill={(poly.color || "#22c55e") + "22"} stroke={poly.color || "#22c55e"} strokeWidth={2} />)}
+    </svg>}
     {markers.map((m, i) => { const p = proj(m.lat, m.lon); if (p.left < -40 || p.left > size.w + 40 || p.top < -40 || p.top > size.h + 40) return null;
-      return <div key={i} className="pointer-events-none absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center" style={{ left: p.left, top: p.top }}>
-        <Plane size={14} style={{ color: "#f59e0b", transform: `rotate(${m.hdg || 0}deg)` }} />
-        <span className="mt-0.5 rounded bg-black/70 px-1 font-mono text-[9px] text-amber-200">{m.cs} · {m.alt}ft</span></div>; })}
+      const clickable = !!m.onClick;
+      return <div key={i} onClick={m.onClick} title={m.title}
+        className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center ${clickable ? "cursor-pointer" : "pointer-events-none"}`}
+        style={{ left: p.left, top: p.top }}>
+        {m.kind === "mission"
+          ? <MapPin size={16} style={{ color: "#22c55e" }} fill="#22c55e22" />
+          : <Plane size={14} style={{ color: "#f59e0b", transform: `rotate(${m.hdg || 0}deg)` }} />}
+        <span className="mt-0.5 rounded bg-black/70 px-1 font-mono text-[9px]" style={{ color: m.kind === "mission" ? "#86efac" : "#fde68a" }}>
+          {m.kind === "mission" ? m.label : `${m.cs} · ${m.alt}ft`}</span></div>; })}
   </div>;
 }
 
-function Airspace({ data, setSetting }) {
+function Airspace({ data, setSetting, onSelectMission }) {
   const as = data.settings.airspace;
+  // Missions with coordinates set (Mission form → Lat/Lon) show up as map markers; selecting one
+  // jumps to Manage → Missions and flashes the card, reusing the same highlight mechanism the
+  // global search results use — no separate "focus mission" implementation needed.
+  const missionMarkers = useMemo(() => data.missions
+    .filter(m => m.lat != null && m.lon != null && m.lat !== "" && m.lon !== "")
+    .map(m => ({ kind: "mission", lat: +m.lat, lon: +m.lon, label: m.name, title: m.name, onClick: () => onSelectMission?.(m.id) })),
+    [data.missions, onSelectMission]);
+  // Mission flight-planning areas (imported KML/GPX or hand-built in the Mission form) render as polygon
+  // overlays on this same map — see TileMap's `polygons` prop.
+  const missionPolygons = useMemo(() => data.missions
+    .filter(m => (m.geofence || []).length >= 3)
+    .map(m => ({ points: m.geofence, color: "#22c55e" })),
+    [data.missions]);
   const [traffic, setTraffic] = useState([]);
   const [loading, setLoading] = useState(false);
   const [trafficMsg, setTrafficMsg] = useState("");
@@ -1001,14 +1169,14 @@ function Airspace({ data, setSetting }) {
           </div>
         </div>
         <div className="relative h-80">
-          <TileMap basemap={as.basemap} center={{ lat: as.lat, lon: as.lon }} zoom={as.zoom} markers={traffic}
+          <TileMap basemap={as.basemap} center={{ lat: as.lat, lon: as.lon }} zoom={as.zoom} markers={[...traffic, ...missionMarkers]} polygons={missionPolygons}
             onPan={(c) => { setSetting(["airspace", "lat"], +c.lat.toFixed(4)); setSetting(["airspace", "lon"], +c.lon.toFixed(4)); }} />
           <div className="absolute right-2 top-2 flex flex-col gap-1">
-            <button onClick={() => setSetting(["airspace", "zoom"], Math.min(15, as.zoom + 1))} className="grid h-7 w-7 place-items-center rounded bg-black/60 text-white"><PlusIcon size={14} /></button>
-            <button onClick={() => setSetting(["airspace", "zoom"], Math.max(5, as.zoom - 1))} className="grid h-7 w-7 place-items-center rounded bg-black/60 text-white"><Minus size={14} /></button>
+            <IconBtn onClick={() => setSetting(["airspace", "zoom"], Math.min(15, as.zoom + 1))} label="Zoom in" className="grid !h-7 !w-7 place-items-center rounded bg-black/60 !text-white"><PlusIcon size={14} /></IconBtn>
+            <IconBtn onClick={() => setSetting(["airspace", "zoom"], Math.max(5, as.zoom - 1))} label="Zoom out" className="grid !h-7 !w-7 place-items-center rounded bg-black/60 !text-white"><Minus size={14} /></IconBtn>
           </div>
           <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 font-mono text-[10px] text-slate-200">
-            {as.lat.toFixed(3)}, {as.lon.toFixed(3)} · z{as.zoom} · {traffic.length} contacts {as.trafficSource === "local" ? "(local)" : "(adsb.fi)"}
+            {as.lat.toFixed(3)}, {as.lon.toFixed(3)} · z{as.zoom} · {traffic.length} contacts {as.trafficSource === "local" ? "(local)" : "(adsb.fi)"} · {missionMarkers.length} mission{missionMarkers.length === 1 ? "" : "s"} · {missionPolygons.length} flight area{missionPolygons.length === 1 ? "" : "s"}
           </div>
         </div>
         {trafficMsg && <p className="border-t bd px-4 py-1.5 text-[11px] text-amber-500">{trafficMsg}</p>}
@@ -1029,8 +1197,8 @@ function Airspace({ data, setSetting }) {
               {(as.stations || []).map(s => (
                 <span key={s} className={`group inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs ${as.station === s ? "accbg" : "bd t3"}`}>
                   <button onClick={() => setSetting(["airspace", "station"], s)}>{s}</button>
-                  <button onClick={() => { const next = (as.stations || []).filter(x => x !== s); setSetting(["airspace", "stations"], next); if (as.station === s && next[0]) setSetting(["airspace", "station"], next[0]); }}
-                    className="opacity-50 hover:opacity-100"><X size={11} /></button>
+                  <IconBtn onClick={() => { const next = (as.stations || []).filter(x => x !== s); setSetting(["airspace", "stations"], next); if (as.station === s && next[0]) setSetting(["airspace", "station"], next[0]); }}
+                    label={`Remove ${s}`} className="!p-0 opacity-50 hover:!bg-transparent hover:opacity-100"><X size={11} /></IconBtn>
                 </span>))}
             </div>
             <div className="mt-1.5 flex gap-1.5">
@@ -1163,6 +1331,7 @@ function OpsCenter({ data, nameOf, setSetting }) {
   const live = data.flights.find(fl => fl.status === "Active") || data.flights[0];
   const ac = live ? nameOf("aircraft", live.aircraft) : "—";
   const v = (x, u = "", d = 0) => (x == null ? "—" : `${(+x).toFixed(d)}${u}`);
+  const vAlt = (m, d = 0) => (m == null ? "—" : v(dispAlt(m, data).value, ` ${dispAlt(0, data).unit}`, d));
   const statusColor = { idle: "#64748b", connecting: "#f59e0b", live: "#1776bb", error: "#f43f5e" }[t.status];
   const statusLabel = { idle: "Idle", connecting: "Connecting…", live: "Live", error: "No signal" }[t.status];
 
@@ -1171,9 +1340,9 @@ function OpsCenter({ data, nameOf, setSetting }) {
 
     {/* video source */}
     <div className="mb-3 flex flex-wrap items-end gap-3 rounded-xl border bd sf p-4">
-      <div className="w-52"><Field label="Video type"><Select value={ops.type} onChange={e => setSetting(["ops", "type"], e.target.value)}>
+      <div className="w-full sm:w-52"><Field label="Video type"><Select value={ops.type} onChange={e => setSetting(["ops", "type"], e.target.value)}>
         {Object.entries(STREAM_TYPES).map(([k, vv]) => <option key={k} value={k}>{vv}</option>)}</Select></Field></div>
-      <div className="min-w-[240px] flex-1"><Field label="Stream URL"><div className="flex items-center gap-2">
+      <div className="w-full sm:min-w-[240px] sm:flex-1"><Field label="Stream URL"><div className="flex items-center gap-2">
         <Link2 size={15} className="t4" /><TextInput value={draft} onChange={e => setDraft(e.target.value)} placeholder="https://…/stream.m3u8" /></div></Field></div>
       <Btn variant="primary" onClick={() => setSetting(["ops", "url"], draft)}>Connect video</Btn>
       {ops.url && <Btn onClick={() => { setSetting(["ops", "url"], ""); setDraft(""); }}>Clear</Btn>}
@@ -1181,12 +1350,12 @@ function OpsCenter({ data, nameOf, setSetting }) {
 
     {/* telemetry source */}
     <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border bd sf p-4">
-      <div className="w-52"><Field label="Telemetry source"><Select value={tel.source} onChange={e => setSetting(["telemetry", "source"], e.target.value)}>
+      <div className="w-full sm:w-52"><Field label="Telemetry source"><Select value={tel.source} onChange={e => setSetting(["telemetry", "source"], e.target.value)}>
         {Object.entries(TEL_SOURCES).map(([k, vv]) => <option key={k} value={k}>{vv}</option>)}</Select></Field></div>
-      {tel.source === "ws" && <div className="min-w-[240px] flex-1"><Field label="WebSocket URL"><TextInput value={tel.wsUrl} onChange={e => setSetting(["telemetry", "wsUrl"], e.target.value)} placeholder="wss://relay.yourdomain.com/telemetry" /></Field></div>}
+      {tel.source === "ws" && <div className="w-full sm:min-w-[240px] sm:flex-1"><Field label="WebSocket URL"><TextInput value={tel.wsUrl} onChange={e => setSetting(["telemetry", "wsUrl"], e.target.value)} placeholder="wss://relay.yourdomain.com/telemetry" /></Field></div>}
       {tel.source === "mqtt" && <>
-        <div className="min-w-[200px] flex-1"><Field label="Broker (ws/wss)"><TextInput value={tel.mqttUrl} onChange={e => setSetting(["telemetry", "mqttUrl"], e.target.value)} placeholder="wss://broker:8083/mqtt" /></Field></div>
-        <div className="w-48"><Field label="Topic"><TextInput value={tel.mqttTopic} onChange={e => setSetting(["telemetry", "mqttTopic"], e.target.value)} placeholder="uas/+/telemetry" /></Field></div></>}
+        <div className="w-full sm:min-w-[200px] sm:flex-1"><Field label="Broker (ws/wss)"><TextInput value={tel.mqttUrl} onChange={e => setSetting(["telemetry", "mqttUrl"], e.target.value)} placeholder="wss://broker:8083/mqtt" /></Field></div>
+        <div className="w-full sm:w-48"><Field label="Topic"><TextInput value={tel.mqttTopic} onChange={e => setSetting(["telemetry", "mqttTopic"], e.target.value)} placeholder="uas/+/telemetry" /></Field></div></>}
       <span className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium" style={{ background: statusColor + "22", color: statusColor }}>
         <span className="h-1.5 w-1.5 rounded-full" style={{ background: statusColor }} />{statusLabel}</span>
       {t.running ? <Btn onClick={t.stop}><Square size={13} />Stop</Btn> : <Btn variant="primary" onClick={t.start}><Play size={13} />Connect telemetry</Btn>}
@@ -1199,13 +1368,13 @@ function OpsCenter({ data, nameOf, setSetting }) {
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: ops.url ? "#1776bb" : "#f43f5e" }} />{ops.url ? "Connected" : "Offline"}</span></div>
         <div className="relative aspect-video bg-black"><StreamPlayer type={ops.type} url={ops.url} />
           <div className="pointer-events-none absolute inset-0 p-3 font-mono text-[11px]" style={{ color: "#7cc3eecc", textShadow: "0 1px 3px rgba(0,0,0,.8)" }}>
-            <div className="flex justify-between"><span>ALT {v(f?.alt, " m")}</span><span>SPD {v(f?.spd, " m/s", 1)}</span><span>HDG {v(f?.hdg, "°")}</span></div>
+            <div className="flex justify-between"><span>ALT {vAlt(f?.alt)}</span><span>SPD {v(f?.spd, " m/s", 1)}</span><span>HDG {v(f?.hdg, "°")}</span></div>
             <div className="absolute bottom-3 left-3">BAT {v(f?.batt, "%")}</div><div className="absolute bottom-3 right-3">LINK {v(f?.rc, " dBm")}</div></div></div>
       </div>
       <div className="space-y-4">
         <Panel title="Telemetry" icon={Gauge} right={<span className="text-[10px] uppercase tracking-wide" style={{ color: statusColor }}>{statusLabel}</span>}>
-          <Kv k="Altitude" v={v(f?.alt, " m", 1)} /><Kv k="Ground speed" v={v(f?.spd, " m/s", 1)} /><Kv k="Heading" v={v(f?.hdg, " °")} />
-          <Kv k="Distance home" v={v(f?.dist, " m")} /><Kv k="Satellites" v={f?.sats ?? "—"} /><Kv k="Flight mode" v={f?.mode ?? "—"} /></Panel>
+          <Kv k="Altitude" v={vAlt(f?.alt, 1)} /><Kv k="Ground speed" v={v(f?.spd, " m/s", 1)} /><Kv k="Heading" v={v(f?.hdg, " °")} />
+          <Kv k="Distance home" v={vAlt(f?.dist)} /><Kv k="Satellites" v={f?.sats ?? "—"} /><Kv k="Flight mode" v={f?.mode ?? "—"} /></Panel>
         <Panel title="Link & power" icon={Wifi}>
           <Kv k="RC link" v={v(f?.rc, " dBm")} /><Kv k="Video link" v={v(f?.vid, " dBm")} /><Kv k="Battery" v={v(f?.batt, " %")} /><Kv k="Voltage" v={v(f?.volt, " V", 1)} />
           <p className="pt-1 text-[11px] t4">Publishes a normalized JSON frame; companion (Pi) → MQTT/WS via the relay or broker.</p></Panel>
@@ -1243,10 +1412,10 @@ function Reporting({ data, nameOf, update }) {
 
     {pane === "builder" ? <>
       <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border bd sf p-4">
-        <div className="w-44"><Field label="Report"><Select value={entity} onChange={e => setEntity(e.target.value)}>{ENTITIES.map(x => <option key={x} value={x}>{cap(x)}</option>)}</Select></Field></div>
-        <div className="w-44"><Field label="Time span"><Select value={preset} onChange={e => setPreset(e.target.value)} disabled={dateless}>{Object.entries(RANGE_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</Select></Field></div>
-        {preset === "custom" && !dateless && <><div className="w-40"><Field label="From"><TextInput type="date" value={from} onChange={e => setFrom(e.target.value)} /></Field></div>
-          <div className="w-40"><Field label="To"><TextInput type="date" value={to} onChange={e => setTo(e.target.value)} /></Field></div></>}
+        <div className="w-full sm:w-44"><Field label="Report"><Select value={entity} onChange={e => setEntity(e.target.value)}>{ENTITIES.map(x => <option key={x} value={x}>{cap(x)}</option>)}</Select></Field></div>
+        <div className="w-full sm:w-44"><Field label="Time span"><Select value={preset} onChange={e => setPreset(e.target.value)} disabled={dateless}>{Object.entries(RANGE_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</Select></Field></div>
+        {preset === "custom" && !dateless && <><div className="w-full sm:w-40"><Field label="From"><TextInput type="date" value={from} onChange={e => setFrom(e.target.value)} /></Field></div>
+          <div className="w-full sm:w-40"><Field label="To"><TextInput type="date" value={to} onChange={e => setTo(e.target.value)} /></Field></div></>}
         <div className="ml-auto flex gap-2"><Btn onClick={() => exportCsv(report)}><Download size={14} />CSV</Btn>
           <Btn variant="primary" onClick={() => exportPdf(report, range)}><FileBarChart size={14} />PDF</Btn></div>
       </div>
@@ -1270,8 +1439,9 @@ function buildReport(entity, data, range, nameOf) {
   if (entity === "flights") {
     const rows = data.flights.filter(f => inRange(f.date || "")); const min = rows.reduce((s, f) => s + (f.dur || 0), 0);
     const cm = {}; rows.forEach(f => { const k = nameOf("aircraft", f.aircraft); cm[k] = (cm[k] || 0) + (f.dur || 0); });
-    return { entity, cols: ["Date", "Aircraft", "RPIC", "Dur (min)", "Max alt", "Status"], rows: rows.map(r => [r.date, nameOf("aircraft", r.aircraft), nameOf("users", r.operator), r.dur, r.maxAlt, <Badge value={r.status} />]),
-      raw: rows.map(r => [r.date, nameOf("aircraft", r.aircraft), nameOf("users", r.operator), r.dur, r.maxAlt, r.status]),
+    const altUnit = dispAlt(0, data).unit, altOf = r => dispAlt(r.maxAlt, data).value.toFixed(0);
+    return { entity, cols: ["Date", "Aircraft", "RPIC", "Dur (min)", `Max alt (${altUnit})`, "Status"], rows: rows.map(r => [r.date, nameOf("aircraft", r.aircraft), nameOf("users", r.operator), r.dur, altOf(r), <Badge value={r.status} />]),
+      raw: rows.map(r => [r.date, nameOf("aircraft", r.aircraft), nameOf("users", r.operator), r.dur, altOf(r), r.status]),
       kpis: [{ label: "Flights", value: rows.length, icon: Plane, tone: "teal" }, { label: "Flight hours", value: (min / 60).toFixed(1), icon: Clock, tone: "slate" }, { label: "Aircraft used", value: new Set(rows.map(r => r.aircraft)).size, icon: Layers, tone: "amber" }, { label: "Avg duration", value: rows.length ? Math.round(min / rows.length) + "m" : "0m", icon: TrendingUp, tone: "slate" }],
       chart: { title: "Flight minutes by aircraft", data: Object.entries(cm).map(([name, value]) => ({ name, value })) } };
   }
@@ -1353,7 +1523,7 @@ function Scheduled({ data, nameOf, update }) {
   };
   return (<>
     <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border bd sf p-4">
-      <div className="w-48"><Field label="Report name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} placeholder="Weekly flight log" /></Field></div>
+      <div className="w-full sm:w-48"><Field label="Report name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} placeholder="Weekly flight log" /></Field></div>
       <div className="w-36"><Field label="Report"><Select value={form.entity} onChange={e => set("entity", e.target.value)}>{ENTITIES.map(x => <option key={x} value={x}>{cap(x)}</option>)}</Select></Field></div>
       <div className="w-36"><Field label="Span"><Select value={form.range} onChange={e => set("range", e.target.value)}>{Object.entries(RANGE_PRESETS).filter(([k]) => k !== "custom").map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}</Select></Field></div>
       <div className="w-32"><Field label="Frequency"><Select value={form.freq} onChange={e => set("freq", e.target.value)}>{["Daily", "Weekly", "Monthly"].map(x => <option key={x}>{x}</option>)}</Select></Field></div>
@@ -1369,11 +1539,113 @@ function Scheduled({ data, nameOf, update }) {
   </>);
 }
 
-function exportCsv(report) {
-  try {
-    const csv = [report.cols, ...report.raw].map(row => row.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `${report.entity}-report.csv`; a.click();
-  } catch { alert("Couldn't generate the CSV export. Please try again."); }
+// Shared CSV row serialization — same quoting rule (wrap every field, double up embedded quotes) used by
+// both the Reporting CSV export and the full-fidelity Aircraft/Users CSV export below.
+const rowsToCsv = (cols, rows) => [cols, ...rows].map(row => row.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+function downloadCsv(filename, csv) {
+  try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = filename; a.click(); }
+  catch { alert("Couldn't generate the CSV export. Please try again."); }
+}
+function exportCsv(report) { downloadCsv(`${report.entity}-report.csv`, rowsToCsv(report.cols, report.raw)); }
+
+// Minimal RFC4180-ish CSV parser: handles quoted fields, embedded commas/quotes (""), and CRLF/LF rows.
+// No library needed for a format this small.
+function parseCsvText(text) {
+  const rows = []; let row = [], field = "", inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(field); rows.push(row); row = []; field = ""; }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== ""));
+}
+// Full-fidelity export field specs for bulk CSV — mirrors the editable fields in the Aircraft/User forms,
+// so a round trip (export → edit → import) doesn't lose data.
+const AIRCRAFT_CSV_FIELDS = [
+  { key: "tail", label: "Tail" }, { key: "model", label: "Model" }, { key: "serial", label: "Serial" }, { key: "type", label: "Type" },
+  { key: "status", label: "Status" }, { key: "hours", label: "Hours" }, { key: "cycles", label: "Cycles" }, { key: "lastMx", label: "Last Mx" },
+  { key: "faaReg", label: "FAA Reg" }, { key: "regExp", label: "Reg Expiry" }, { key: "remoteId", label: "Remote ID" },
+  { key: "mxIntervalHours", label: "Mx Interval Hours" }, { key: "mxIntervalCycles", label: "Mx Interval Cycles" }, { key: "mxIntervalDays", label: "Mx Interval Days" },
+  { key: "mxAtHours", label: "Mx At Hours" }, { key: "mxAtCycles", label: "Mx At Cycles" },
+];
+const USER_CSV_FIELDS = [
+  { key: "name", label: "Name" }, { key: "role", label: "Role" }, { key: "cert", label: "Certification" }, { key: "certExp", label: "Cert Expiry" }, { key: "status", label: "Status" },
+];
+const BATTERY_CSV_FIELDS = [
+  { key: "label", label: "Label" }, { key: "chem", label: "Chemistry" }, { key: "capacity", label: "Capacity (Wh)" },
+  { key: "cycles", label: "Cycles" }, { key: "health", label: "Health" }, { key: "status", label: "Status" }, { key: "cycleLimit", label: "Cycle Limit" },
+];
+const EQUIPMENT_CSV_FIELDS = [
+  { key: "name", label: "Name" }, { key: "category", label: "Category" }, { key: "serial", label: "Serial" }, { key: "status", label: "Status" },
+  { key: "aircraftId", label: "Aircraft ID" }, { key: "missionId", label: "Mission ID" }, { key: "notes", label: "Notes" },
+];
+const MAINTENANCE_CSV_FIELDS = [
+  { key: "date", label: "Date" }, { key: "aircraft", label: "Aircraft ID" }, { key: "type", label: "Type" }, { key: "desc", label: "Description" }, { key: "tech", label: "Technician" },
+];
+const INCIDENT_CSV_FIELDS = [
+  { key: "date", label: "Date" }, { key: "aircraft", label: "Aircraft ID" }, { key: "severity", label: "Severity" }, { key: "desc", label: "Description" }, { key: "resolution", label: "Resolution" },
+];
+const NUMERIC_FIELDS = new Set(["hours", "cycles", "mxIntervalHours", "mxIntervalCycles", "mxIntervalDays", "mxAtHours", "mxAtCycles", "capacity", "health", "cycleLimit"]);
+// One filename per entity type — covers every CSV-enabled view, including this session's four additions.
+const CSV_FILENAMES = { aircraft: "aircraft.csv", user: "users.csv", battery: "batteries.csv", equipment: "equipment.csv", maintenance: "maintenance.csv", incident: "incidents.csv" };
+function exportEntityCsv(type, fields, list) {
+  downloadCsv(CSV_FILENAMES[type] || `${type}.csv`, rowsToCsv(fields.map(f => f.label), list.map(item => fields.map(f => item[f.key]))));
+}
+// Header-only CSV — lets a user see the exact expected columns without first exporting real data.
+function downloadTemplateCsv(type, fields) {
+  const base = (CSV_FILENAMES[type] || `${type}.csv`).replace(/\.csv$/, "");
+  downloadCsv(`${base}-template.csv`, rowsToCsv(fields.map(f => f.label), []));
+}
+// Parses a CSV (matched by header label, case-insensitive) into candidate records merged over the type's
+// normal form defaults, validates each row with the *same* validate() the modal forms use, and reports
+// errors per row without touching any row that fails — only valid rows get upserted.
+function importEntityCsv(type, fields, text, upsert, prefix) {
+  const rows = parseCsvText(text);
+  if (rows.length < 2) return { added: 0, errors: [{ row: 1, msgs: ["No data rows found."] }] };
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  const colFor = (label) => header.indexOf(label.toLowerCase());
+  const defaults = init({ type });
+  const errors = []; let added = 0;
+  rows.slice(1).forEach((cells, i) => {
+    const rec = { ...defaults };
+    fields.forEach(f => { const ci = colFor(f.label); if (ci === -1) return;
+      const raw = (cells[ci] ?? "").trim();
+      rec[f.key] = NUMERIC_FIELDS.has(f.key) ? (raw === "" ? 0 : +raw) : raw; });
+    const errs = validate(type, rec);
+    if (errs.length) { errors.push({ row: i + 2, msgs: errs }); return; }
+    upsert(CONFIG[type].coll, { ...rec, id: uid(prefix) });
+    added++;
+  });
+  return { added, errors };
+}
+// Shared Export/Import CSV state for the Aircraft and Users views — each view renders its own buttons
+// and banner placement, but the file-picker plumbing and row-report state live here once.
+function useCsvImportExport(type, fields, list, upsert, prefix) {
+  const [report, setReport] = useState(null);
+  const exportNow = () => exportEntityCsv(type, fields, list);
+  const importNow = () => {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv";
+    inp.onchange = async () => { const f = inp.files?.[0]; if (!f) return; setReport(importEntityCsv(type, fields, await f.text(), upsert, prefix)); };
+    inp.click();
+  };
+  return { report, clearReport: () => setReport(null), exportNow, importNow, downloadTemplate: () => downloadTemplateCsv(type, fields) };
+}
+function CsvReportBanner({ report, onDismiss }) {
+  if (!report) return null;
+  return <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border bd sf px-4 py-2.5 text-[11px]">
+    <div>
+      <span className={report.errors.length ? "text-amber-500" : "acc"}>{report.added} row{report.added === 1 ? "" : "s"} imported.</span>
+      {report.errors.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-4 text-rose-400">
+        {report.errors.map((e, i) => <li key={i}>Row {e.row}: {e.msgs.join(" ")}</li>)}</ul>}
+    </div>
+    <IconBtn onClick={onDismiss} label="Dismiss" className="!p-0 t4 hover:!bg-transparent hover:opacity-70"><X size={12} /></IconBtn>
+  </div>;
 }
 function exportPdf(report, range) {
   const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -1467,7 +1739,43 @@ function RelayPanel({ data, setSetting }) {
     </Panel>
   );
 }
-function Settings({ data, setData, setSetting, onReset }) {
+// "Acting as" picks which crew member's role gates create/edit/delete across the app (App() computes
+// `can` from this). Always rendered and always editable — even without manageSettings — so nobody can
+// lock themselves out of the one control that lets them undo a permission change (there's no
+// login/backend recovery path in a local-first app).
+function RolesAccessPanel({ data, setSetting }) {
+  return (
+    <Panel title="Roles & access" icon={Users}>
+      <Field label="Acting as">
+        <Select value={data.settings.currentUserId || ""} onChange={e => setSetting(["currentUserId"], e.target.value)}>
+          <option value="">— No one (full access) —</option>
+          {data.users.map(u => <option key={u.id} value={u.id}>{u.name} ({u.role})</option>)}
+        </Select>
+      </Field>
+      <p className="pb-3 pt-1.5 text-[11px] t4">Permissions only take effect once someone's picked here — leave as "No one" to keep full access for a single-operator workspace.</p>
+      <div className="overflow-x-auto rounded-lg border bd">
+        <table className="w-full border-collapse text-xs">
+          <thead><tr className="border-b bd sf2">
+            <th className="px-2.5 py-2 text-left font-semibold uppercase tracking-wider t4">Role</th>
+            {PERMISSIONS.map(p => <th key={p.key} title={p.desc} className="px-2 py-2 text-center font-semibold uppercase tracking-wider t4">{p.label}</th>)}
+          </tr></thead>
+          <tbody>{ROLES.map(role => {
+            const perms = rolePermissions(role, data.settings);
+            return <tr key={role} className="border-b bd last:border-0">
+              <td className="px-2.5 py-1.5 t2">{role}</td>
+              {PERMISSIONS.map(p => <td key={p.key} className="px-2 py-1.5 text-center">
+                <input type="checkbox" checked={!!perms[p.key]}
+                  onChange={() => setSetting(["rolePermissions", role], { ...perms, [p.key]: !perms[p.key] })} />
+              </td>)}
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>
+      <p className="pt-2 text-[11px] t4">Gates create/edit/delete only — everyone can always view records and run reports.</p>
+    </Panel>
+  );
+}
+function Settings({ data, setData, setSetting, onReset, can }) {
   const reset = () => { if (confirm("Reset workspace? This clears your records and returns to the start screen.")) onReset(); };
   const org = data.settings.org;
   const pickLogo = () => {
@@ -1486,40 +1794,45 @@ function Settings({ data, setData, setSetting, onReset }) {
   return (<>
     <PageHeader title="Settings" subtitle="Organization, integrations, and data." action={<ThemeToggle theme={data.settings.theme} onChange={v => setSetting(["theme"], v)} />} />
     <div className="grid gap-4 lg:grid-cols-2">
-      <Panel title="Organization" icon={SettingsIcon}><div className="space-y-3">
-        <Field label="Operator name"><TextInput value={org.name} onChange={e => setSetting(["org", "name"], e.target.value)} placeholder="Your UAS Ops" /></Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Part 107 / 44807"><Select value={org.part107} onChange={e => setSetting(["org", "part107"], e.target.value)}>{["On file", "Pending", "Expired", "Not filed"].map(s => <option key={s}>{s}</option>)}</Select></Field>
-          <Field label="Default units"><Select value={org.units} onChange={e => setSetting(["org", "units"], e.target.value)}><option value="metric">Metric (m, m/s)</option><option value="imperial">Imperial (ft, mph)</option></Select></Field>
-        </div>
-        <Field label="Brand accent color">
-          <div className="flex items-center gap-2">
-            <input type="color" value={org.accent || "#1776bb"} onChange={e => setSetting(["org", "accent"], e.target.value)}
-              className="h-9 w-12 shrink-0 cursor-pointer rounded border bd bg-transparent p-0.5" title="Pick accent color" />
-            <TextInput value={org.accent || "#1776bb"} onChange={e => setSetting(["org", "accent"], e.target.value)} placeholder="#1776bb" />
-            {org.accent && org.accent.toLowerCase() !== "#1776bb" && <Btn onClick={() => setSetting(["org", "accent"], "#1776bb")}>Reset</Btn>}
+      {can.manageSettings ? <>
+        <Panel title="Organization" icon={SettingsIcon}><div className="space-y-3">
+          <Field label="Operator name"><TextInput value={org.name} onChange={e => setSetting(["org", "name"], e.target.value)} placeholder="Your UAS Ops" /></Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Part 107 / 44807"><Select value={org.part107} onChange={e => setSetting(["org", "part107"], e.target.value)}>{["On file", "Pending", "Expired", "Not filed"].map(s => <option key={s}>{s}</option>)}</Select></Field>
+            <Field label="Default units"><Select value={org.units} onChange={e => setSetting(["org", "units"], e.target.value)}><option value="metric">Metric (m, m/s)</option><option value="imperial">Imperial (ft, mph)</option></Select></Field>
           </div>
-        </Field>
-        <Field label="Company logo / emblem">
-          <div className="flex items-center gap-3">
-            <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-md border bd sf2">
-              {org.logo ? <img src={org.logo} alt="logo" className="h-full w-full object-cover" /> : <Plane size={20} className="acc" />}
+          <Field label="Brand accent color">
+            <div className="flex items-center gap-2">
+              <input type="color" value={org.accent || "#1776bb"} onChange={e => setSetting(["org", "accent"], e.target.value)}
+                className="h-9 w-12 shrink-0 cursor-pointer rounded border bd bg-transparent p-0.5" title="Pick accent color" />
+              <TextInput value={org.accent || "#1776bb"} onChange={e => setSetting(["org", "accent"], e.target.value)} placeholder="#1776bb" />
+              {org.accent && org.accent.toLowerCase() !== "#1776bb" && <Btn onClick={() => setSetting(["org", "accent"], "#1776bb")}>Reset</Btn>}
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Btn onClick={pickLogo}><Upload size={13} />{org.logo ? "Replace" : "Upload logo"}</Btn>
-              {org.logo && <Btn variant="danger" onClick={() => setSetting(["org", "logo"], "")}><Trash2 size={13} />Remove</Btn>}
+          </Field>
+          <Field label="Company logo / emblem">
+            <div className="flex items-center gap-3">
+              <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-md border bd sf2">
+                {org.logo ? <img src={org.logo} alt="logo" className="h-full w-full object-cover" /> : <Plane size={20} className="acc" />}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Btn onClick={pickLogo}><Upload size={13} />{org.logo ? "Replace" : "Upload logo"}</Btn>
+                {org.logo && <Btn variant="danger" onClick={() => setSetting(["org", "logo"], "")}><Trash2 size={13} />Remove</Btn>}
+              </div>
             </div>
-          </div>
-          <p className="pt-1.5 text-[11px] t4">Shown in the side rail in place of the default plane emblem. PNG/SVG/JPG under 1 MB.</p>
-        </Field>
-        <Kv k="Theme" v={cap(data.settings.theme)} /></div></Panel>
-      <RelayPanel data={data} setSetting={setSetting} />
-      <StoragePanel data={data} setData={setData} />
-      <Panel title="Integrations" icon={Wifi}>{intRows.map(([l, v]) => <div key={l} className="flex items-center justify-between py-1.5"><span className="text-sm t2">{l}</span>
-        <span className="rounded-full border bd px-2 py-0.5 text-[10px] uppercase tracking-wide t3">{v}</span></div>)}</Panel>
-      <Panel title="Roles & access" icon={Users}><Kv k="Ops managers" v={data.users.filter(u => u.role === "Ops Manager").length} /><Kv k="Remote PICs" v={data.users.filter(u => u.role === "Remote PIC").length} /><p className="pt-1 text-[11px] t4">Granular permissions wire in here.</p></Panel>
-      <Panel title="Data" icon={Layers}><Kv k="Aircraft" v={data.aircraft.length} /><Kv k="Flights logged" v={data.flights.length} /><Kv k="Missions" v={data.missions.length} />
-        <div className="pt-2"><Btn variant="danger" onClick={reset}><Trash2 size={14} />Reset to defaults</Btn></div></Panel>
+            <p className="pt-1.5 text-[11px] t4">Shown in the side rail in place of the default plane emblem. PNG/SVG/JPG under 1 MB.</p>
+          </Field>
+          <Kv k="Theme" v={cap(data.settings.theme)} /></div></Panel>
+        <RelayPanel data={data} setSetting={setSetting} />
+        <StoragePanel data={data} setData={setData} />
+        <Panel title="Integrations" icon={Wifi}>{intRows.map(([l, v]) => <div key={l} className="flex items-center justify-between py-1.5"><span className="text-sm t2">{l}</span>
+          <span className="rounded-full border bd px-2 py-0.5 text-[10px] uppercase tracking-wide t3">{v}</span></div>)}</Panel>
+        <Panel title="Data" icon={Layers}><Kv k="Aircraft" v={data.aircraft.length} /><Kv k="Equipment" v={(data.equipment || []).length} /><Kv k="Flights logged" v={data.flights.length} /><Kv k="Missions" v={data.missions.length} />
+          <div className="pt-2"><Btn variant="danger" onClick={reset}><Trash2 size={14} />Reset to defaults</Btn></div></Panel>
+      </> : <Panel title="Organization & integrations" icon={SettingsIcon}>
+        <p className="text-sm t3">The current "Acting as" role doesn't have Settings permission, so organization, integrations, storage, relay, and data controls are hidden here.</p>
+        <p className="pt-2 text-[11px] t4">Switch "Acting as" below, or grant Settings access to the current role.</p>
+      </Panel>}
+      <RolesAccessPanel data={data} setSetting={setSetting} />
     </div>
   </>);
 }
@@ -1533,7 +1846,7 @@ function ViewToggle({ value, onChange }) {
         className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${value === k ? "accbg" : "t3 hov"}`}>
         <Icon size={13} />{l}</button>))}</div>;
 }
-function Missions({ data, setModal, remove, nameOf, highlight, setSetting }) {
+function Missions({ data, setModal, remove, nameOf, highlight, setSetting, can = true }) {
   const list = data.missions;
   const hlRef = useHighlightScroll(highlight);
   const [viewMode, setViewMode] = useState("card");
@@ -1547,33 +1860,41 @@ function Missions({ data, setModal, remove, nameOf, highlight, setSetting }) {
     { id: "laanc", label: "LAANC", cell: m => <Cell>{m.laanc}</Cell> },
     { id: "risk", label: "Risk", cell: m => <Cell>{m.risk}</Cell> },
     { id: "status", label: "Status", cell: m => <Td><Badge value={m.status} /></Td> },
+    { id: "readiness", label: "Readiness", cell: m => <Td><ReadinessChip readiness={missionReadiness(m, data)} className="" /></Td> },
   ];
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<>
     <PageHeader title="Missions" subtitle="Plan operations and pre-assign crew and aircraft."
       action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
         {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
-        <Btn variant="primary" onClick={() => setModal({ type: "mission" })}><Plus size={15} />New mission</Btn></div>} />
+        {can && <Btn variant="primary" onClick={() => setModal({ type: "mission" })}><Plus size={15} />New mission</Btn>}</div>} />
     {list.length === 0 ? <Empty icon={Map} label="No missions yet" hint="Create a mission to assign operators and aircraft." />
       : viewMode === "list"
       ? <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(m => { const hl = highlight?.coll === "missions" && highlight.id === m.id;
         return <Row key={m.id} hl={hl} innerRef={hl ? hlRef : null}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(m)}</React.Fragment>)}
         <Td><div className="flex justify-end gap-1">
-          <button onClick={() => setModal({ type: "flight", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Log flight"><Plane size={14} /></button>
-          <button onClick={() => setModal({ type: "checklistRun", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Checklist"><ClipboardCheck size={14} /></button>
-          <RowActions onEdit={() => setModal({ type: "mission", item: m })} onDelete={() => remove("missions", m.id)} /></div></Td></Row>; })}</Table>
+          {can && <button onClick={() => setModal({ type: "flight", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Log flight"><Plane size={14} /></button>}
+          {can && <button onClick={() => setModal({ type: "checklistRun", item: { missionId: m.id } })} className="rounded p-1.5 t4 hov hover:opacity-90" title="Checklist"><ClipboardCheck size={14} /></button>}
+          <RowActions onEdit={can ? () => setModal({ type: "mission", item: m }) : null} onDelete={can ? () => remove("missions", m.id) : null} /></div></Td></Row>; })}</Table>
       : <div className="grid gap-3 sm:grid-cols-2">{list.map(m => { const hl = highlight?.coll === "missions" && highlight.id === m.id;
         return <div key={m.id} ref={hl ? hlRef : null} className={`rounded-xl border bd sf p-4 ${hl ? "hl-card" : ""}`}>
         <div className="flex items-start justify-between gap-2"><div><h3 className="font-semibold t1">{m.name}</h3><p className="mt-0.5 flex items-center gap-1 text-xs t3"><MapPin size={12} />{m.location}</p></div><Badge value={m.status} /></div>
         <p className="mt-3 text-sm t3">{m.objective}</p>
         <div className="mt-3 space-y-1.5 text-xs"><L k="Date" v={m.date} mono /><L k="Operators" v={m.operators.map(id => nameOf("users", id)).join(", ") || "Unassigned"} /><L k="Aircraft" v={m.aircraft.map(id => nameOf("aircraft", id)).join(", ") || "Unassigned"} mono /><L k="LAANC" v={m.laanc} /><L k="Risk" v={m.risk} /></div>
-        <div className="mt-3 flex flex-wrap justify-end gap-2 border-t bd pt-3"><Btn onClick={() => setModal({ type: "flight", item: { missionId: m.id } })}><Plane size={14} />Log flight</Btn><Btn onClick={() => setModal({ type: "checklistRun", item: { missionId: m.id } })}><ClipboardCheck size={14} />Checklist</Btn><Btn onClick={() => setModal({ type: "mission", item: m })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("missions", m.id)}><Trash2 size={14} /></Btn></div></div>; })}</div>}
+        <ReadinessChip readiness={missionReadiness(m, data)} />
+        {can && <div className="mt-3 flex flex-wrap justify-end gap-2 border-t bd pt-3"><Btn onClick={() => setModal({ type: "flight", item: { missionId: m.id } })}><Plane size={14} />Log flight</Btn><Btn onClick={() => setModal({ type: "checklistRun", item: { missionId: m.id } })}><ClipboardCheck size={14} />Checklist</Btn><Btn onClick={() => setModal({ type: "mission", item: m })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("missions", m.id)}><Trash2 size={14} /></Btn></div>}</div>; })}</div>}
   </>);
 }
 const L = ({ k, v, mono }) => <div className="flex justify-between gap-3"><span className="t4">{k}</span><span className={`text-right t2 ${mono ? "font-mono" : ""}`}>{v}</span></div>;
+// Readiness chip for mission cards/rows — green "Ready" or amber listing what's still missing.
+// Purely computed from missionReadiness(); nothing here is persisted.
+function ReadinessChip({ readiness, className = "mt-2" }) {
+  if (readiness.ready) return <p className={`${className} flex items-center gap-1.5 text-xs font-medium`} style={{ color: "#22c55e" }}><BadgeCheck size={13} />Ready</p>;
+  return <p className={`${className} flex items-center gap-1.5 text-xs font-medium text-amber-500`}><AlertTriangle size={13} />Missing: {readiness.missing.join(", ")}</p>;
+}
 
-function Flights({ data, setModal, remove, nameOf, highlight, setSetting }) {
+function Flights({ data, setModal, remove, nameOf, highlight, setSetting, can = true }) {
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("flights", data, setSetting);
   const runOf = f => { const runs = (data.checklistRuns || []).filter(r => r.flightId === f.id); return runs.find(r => r.complete) || runs[0]; };
@@ -1583,8 +1904,8 @@ function Flights({ data, setModal, remove, nameOf, highlight, setSetting }) {
     { id: "rpic", label: "RPIC", cell: f => <Cell>{nameOf("users", f.operator)}</Cell> },
     { id: "aircraft", label: "Aircraft", cell: f => <Cell mono>{nameOf("aircraft", f.aircraft)}</Cell> },
     { id: "dur", label: "Dur (min)", cell: f => <Cell mono>{f.dur}</Cell> },
-    { id: "alt", label: "Max alt (m)", cell: f => <Cell mono>{f.maxAlt}</Cell> },
-    { id: "dist", label: "Dist (km)", cell: f => <Cell mono>{f.dist}</Cell> },
+    { id: "alt", label: `Max alt (${dispAlt(0, data).unit})`, cell: f => <Cell mono>{dispAlt(f.maxAlt, data).value.toFixed(0)}</Cell> },
+    { id: "dist", label: `Dist (${dispDist(0, data).unit})`, cell: f => <Cell mono>{dispDist(f.dist, data).value.toFixed(1)}</Cell> },
     { id: "status", label: "Status", cell: f => <Td><Badge value={f.status} /></Td> },
     { id: "preflight", label: "Pre-flight", cell: f => { const run = runOf(f); return <Td>{run
       ? <button onClick={() => setModal({ type: "checklistRun", item: run })} className="inline-flex items-center gap-1 text-xs font-medium" style={{ color: run.complete ? "#10b981" : "#f59e0b" }}><ClipboardCheck size={13} />{run.complete ? "Complete" : "Partial"}</button>
@@ -1593,15 +1914,15 @@ function Flights({ data, setModal, remove, nameOf, highlight, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Flights" subtitle="Logged sorties and telemetry."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "flight" })}><Plus size={15} />Log flight</Btn></div>} />
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "flight" })}><Plus size={15} />Log flight</Btn>}</div>} />
     {data.flights.length === 0 ? <Empty icon={Plane} label="No flights logged" hint="Log a flight from here or from a mission." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{data.flights.map(f => {
         const hl = highlight?.coll === "flights" && highlight.id === f.id;
         return <Row key={f.id} hl={hl} innerRef={hl ? hlRef : null}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(f)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "flight", item: f })} onDelete={() => remove("flights", f.id)} /></Td></Row>; })}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "flight", item: f }) : null} onDelete={can ? () => remove("flights", f.id) : null} /></Td></Row>; })}</Table>}</>);
 }
-function Laanc({ data, setModal, remove, setSetting }) {
+function Laanc({ data, setModal, remove, setSetting, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("laanc", data, setSetting);
   const columns = [
     { id: "conf", label: "Confirmation", cell: l => <Cell mono>{l.conf}</Cell> },
@@ -1614,13 +1935,13 @@ function Laanc({ data, setModal, remove, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="LAANC Authorizations" subtitle="Airspace authorizations on file."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "laanc" })}><Plus size={15} />New authorization</Btn></div>} />
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "laanc" })}><Plus size={15} />New authorization</Btn>}</div>} />
     {data.laanc.length === 0 ? <Empty icon={Radio} label="No authorizations" hint="Record LAANC approvals tied to a mission." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{data.laanc.map(l => <Row key={l.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(l)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "laanc", item: l })} onDelete={() => remove("laanc", l.id)} /></Td></Row>)}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "laanc", item: l }) : null} onDelete={can ? () => remove("laanc", l.id) : null} /></Td></Row>)}</Table>}</>);
 }
-function Waivers({ data, setModal, remove, setSetting }) {
+function Waivers({ data, setModal, remove, setSetting, can = true }) {
   const now = new Date();
   const list = data.waivers || [];
   const { hidden, toggle, resetCols } = useHiddenColumns("waivers", data, setSetting);
@@ -1636,11 +1957,11 @@ function Waivers({ data, setModal, remove, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Waivers & COAs" subtitle="Part 107 waivers, COAs, and exemptions on file."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "waiver" })}><Plus size={15} />New waiver / COA</Btn></div>} />
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "waiver" })}><Plus size={15} />New waiver / COA</Btn>}</div>} />
     {list.length === 0 ? <Empty icon={BadgeCheck} label="No waivers or COAs" hint="Track waivers, COAs, and exemptions with their scope and expiry." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(w => <Row key={w.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(w)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "waiver", item: w })} onDelete={() => remove("waivers", w.id)} /></Td></Row>)}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "waiver", item: w }) : null} onDelete={can ? () => remove("waivers", w.id) : null} /></Td></Row>)}</Table>}</>);
 }
 // Reads a chosen file into a data-URL kept on the document record (small files only; use a reference link for large ones).
 function pickDocFile(setForm) {
@@ -1650,7 +1971,7 @@ function pickDocFile(setForm) {
     const r = new FileReader(); r.onload = () => setForm(s => ({ ...s, fileData: r.result, fileName: f.name, refUrl: "" })); r.readAsDataURL(f); };
   inp.click();
 }
-function Documents({ data, setModal, remove, setSetting }) {
+function Documents({ data, setModal, remove, setSetting, can = true }) {
   const now = new Date();
   const list = data.documents || [];
   const linkLabel = (t, id) => {
@@ -1676,18 +1997,16 @@ function Documents({ data, setModal, remove, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Document Vault" subtitle="Compliance and operational documents — uploaded files or external references."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "document" })}><Plus size={15} />New document</Btn></div>} />
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "document" })}><Plus size={15} />New document</Btn>}</div>} />
     {list.length === 0 ? <Empty icon={FileText} label="No documents" hint="Upload a file or add a reference for insurance, registrations, manuals, waivers, and more." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(dn => <Row key={dn.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(dn)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "document", item: dn })} onDelete={() => remove("documents", dn.id)} /></Td></Row>)}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "document", item: dn }) : null} onDelete={can ? () => remove("documents", dn.id) : null} /></Td></Row>)}</Table>}</>);
 }
 function GlobalSearch({ data, nameOf, onPick }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => { const h = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
+  const ref = useDismiss(open, () => setOpen(false));
   const groups = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return [];
@@ -1705,6 +2024,9 @@ function GlobalSearch({ data, nameOf, onPick }) {
     const users = data.users.filter(u => hit(u.name, u.role, u.cert, u.status)).slice(0, 6)
       .map(u => ({ id: u.id, title: u.name, sub: `${u.role} · ${u.status}` }));
     if (users.length) out.push({ coll: "users", label: "Users", icon: Users, items: users });
+    const equipment = (data.equipment || []).filter(e => hit(e.name, e.category, e.serial, e.status, e.notes)).slice(0, 6)
+      .map(e => ({ id: e.id, title: e.name, sub: `${e.category} · ${e.status}` }));
+    if (equipment.length) out.push({ coll: "equipment", label: "Equipment", icon: Camera, items: equipment });
     return out;
   }, [q, data, nameOf]);
   const pick = (coll, id) => { onPick(coll, id); setQ(""); setOpen(false); };
@@ -1712,8 +2034,9 @@ function GlobalSearch({ data, nameOf, onPick }) {
     <div className="flex items-center gap-2 rounded-md border bd sf px-3 py-2">
       <Search size={15} className="t4" />
       <input value={q} onFocus={() => setOpen(true)} onChange={e => { setQ(e.target.value); setOpen(true); }}
+        aria-label="Search missions, flights, aircraft, users"
         placeholder="Search missions, flights, aircraft, users…" className="w-full bg-transparent text-sm t2 outline-none" />
-      {q && <button onClick={() => setQ("")} className="t4 hover:opacity-70"><X size={14} /></button>}
+      {q && <IconBtn onClick={() => setQ("")} label="Clear search" className="t3 hover:opacity-70 hover:bg-transparent"><X size={14} /></IconBtn>}
     </div>
     {open && q.trim() && <div className="absolute z-40 mt-1.5 max-h-96 w-full overflow-y-auto rounded-xl border bd shadow-2xl" style={{ background: "var(--modal)" }}>
       {groups.length === 0 ? <div className="px-4 py-6 text-center text-sm t4">No matches for “{q}”.</div>
@@ -1760,30 +2083,65 @@ function LoadError({ onRetry, onFresh }) {
     </div>
   </div>;
 }
-function Checklists({ data, setModal, remove, update }) {
-  const toggle = (id, i) => update("checklists", l => l.map(c => c.id === id ? { ...c, items: c.items.map((it, x) => x === i ? { ...it, done: !it.done } : it) } : c));
+function Checklists({ data, setModal, remove, update, setSetting, can = true }) {
+  const [viewMode, setViewMode] = useState("card");
+  const { hidden, toggle, resetCols } = useHiddenColumns("checklists", data, setSetting);
+  const toggleItem = (id, i) => update("checklists", l => l.map(c => c.id === id ? { ...c, items: c.items.map((it, x) => x === i ? { ...it, done: !it.done } : it) } : c));
   const resetCl = id => update("checklists", l => l.map(c => c.id === id ? { ...c, items: c.items.map(it => ({ ...it, done: false })) } : c));
-  return (<><PageHeader title="Checklists" subtitle="Run and track pre-flight and procedure checklists." action={<Btn variant="primary" onClick={() => setModal({ type: "checklist" })}><Plus size={15} />New checklist</Btn>} />
+  const columns = [
+    { id: "name", label: "Name", cell: c => <Cell>{c.name}</Cell> },
+    { id: "items", label: "Items", cell: c => <Cell mono>{c.items.length}</Cell> },
+    { id: "progress", label: "Progress", cell: c => { const done = c.items.filter(i => i.done).length;
+      return <Td><div className="flex items-center gap-2"><div className="h-1.5 w-16 overflow-hidden rounded sf2"><div className="h-full" style={{ width: `${(done / c.items.length) * 100 || 0}%`, background: "var(--accent)" }} /></div><span className="font-mono text-xs t3">{done}/{c.items.length}</span></div></Td>; } },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Checklists" subtitle="Run and track pre-flight and procedure checklists."
+    action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
+      {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "checklist" })}><Plus size={15} />New checklist</Btn>}</div>} />
     {data.checklists.length === 0 ? <Empty icon={ListChecks} label="No checklists" hint="Create reusable checklists for crews to run." />
+      : viewMode === "list"
+      ? <Table cols={[...visCols.map(c => c.label), ""]}>{data.checklists.map(c => <Row key={c.id}>
+          {visCols.map(col => <React.Fragment key={col.id}>{col.cell(c)}</React.Fragment>)}
+          <Td><div className="flex justify-end gap-1"><Btn onClick={() => resetCl(c.id)}>Reset</Btn>
+            {can && <RowActions onEdit={() => setModal({ type: "checklist", item: c })} onDelete={() => remove("checklists", c.id)} />}</div></Td></Row>)}</Table>
       : <div className="grid gap-3 sm:grid-cols-2">{data.checklists.map(c => { const done = c.items.filter(i => i.done).length;
         return <div key={c.id} className="rounded-xl border bd sf p-4"><div className="flex items-center justify-between"><h3 className="font-semibold t1">{c.name}</h3><span className="font-mono text-xs t4">{done}/{c.items.length}</span></div>
           <div className="mt-2 h-1 w-full overflow-hidden rounded sf2"><div className="h-full" style={{ width: `${(done / c.items.length) * 100 || 0}%`, background: "var(--accent)" }} /></div>
-          <ul className="mt-3 space-y-1.5">{c.items.map((it, i) => <li key={i}><button onClick={() => toggle(c.id, i)} className="flex w-full items-center gap-2 text-left text-sm">
+          <ul className="mt-3 space-y-1.5">{c.items.map((it, i) => <li key={i}><button onClick={() => toggleItem(c.id, i)} className="flex w-full items-center gap-2 text-left text-sm">
             <span className={`grid h-4 w-4 place-items-center rounded border ${it.done ? "accbg" : "bd"}`}>{it.done && <ChevronRight size={11} />}</span>
             <span className={it.done ? "t4 line-through" : "t2"}>{it.t}</span></button></li>)}</ul>
-          <div className="mt-3 flex justify-end gap-2 border-t bd pt-3"><Btn onClick={() => resetCl(c.id)}>Reset</Btn><Btn onClick={() => setModal({ type: "checklist", item: c })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("checklists", c.id)}><Trash2 size={14} /></Btn></div></div>; })}</div>}</>);
+          <div className="mt-3 flex justify-end gap-2 border-t bd pt-3"><Btn onClick={() => resetCl(c.id)}>Reset</Btn>{can && <><Btn onClick={() => setModal({ type: "checklist", item: c })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("checklists", c.id)}><Trash2 size={14} /></Btn></>}</div></div>; })}</div>}</>);
 }
-function RiskList({ data, setModal, remove }) {
-  return (<><PageHeader title="Risk Assessments" subtitle="Hazard analysis and mitigations per operation." action={<Btn variant="primary" onClick={() => setModal({ type: "risk" })}><Plus size={15} />New assessment</Btn>} />
+function RiskList({ data, setModal, remove, setSetting, can = true }) {
+  const [viewMode, setViewMode] = useState("card");
+  const { hidden, toggle, resetCols } = useHiddenColumns("risk", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: r => <Cell>{r.name}</Cell> },
+    { id: "date", label: "Date", cell: r => <Cell mono>{r.date}</Cell> },
+    { id: "level", label: "Level", cell: r => <Td><span className="rounded-full px-2.5 py-0.5 text-xs font-medium" style={{ background: (r.level === "High" ? "#f43f5e" : r.level === "Moderate" ? "#f59e0b" : "#1776bb") + "26", color: r.level === "High" ? "#f43f5e" : r.level === "Moderate" ? "#f59e0b" : "#1776bb" }}>{r.level}</span></Td> },
+    { id: "hazards", label: "Hazards", cell: r => <Cell>{r.hazards}</Cell> },
+    { id: "mitigations", label: "Mitigations", cell: r => <Cell>{r.mitigations}</Cell> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Risk Assessments" subtitle="Hazard analysis and mitigations per operation."
+    action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
+      {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "risk" })}><Plus size={15} />New assessment</Btn>}</div>} />
     {data.riskAssessments.length === 0 ? <Empty icon={ShieldAlert} label="No assessments" />
+      : viewMode === "list"
+      ? <Table cols={[...visCols.map(c => c.label), ""]}>{data.riskAssessments.map(r => <Row key={r.id}>
+          {visCols.map(c => <React.Fragment key={c.id}>{c.cell(r)}</React.Fragment>)}
+          <Td><RowActions onEdit={can ? () => setModal({ type: "risk", item: r }) : null} onDelete={can ? () => remove("riskAssessments", r.id) : null} /></Td></Row>)}</Table>
       : <div className="space-y-3">{data.riskAssessments.map(r => <div key={r.id} className="rounded-xl border bd sf p-4">
         <div className="flex items-start justify-between"><div><h3 className="font-semibold t1">{r.name}</h3><span className="font-mono text-xs t4">{r.date}</span></div>
           <span className="rounded-full px-2.5 py-0.5 text-xs font-medium" style={{ background: (r.level === "High" ? "#f43f5e" : r.level === "Moderate" ? "#f59e0b" : "#1776bb") + "26", color: r.level === "High" ? "#f43f5e" : r.level === "Moderate" ? "#f59e0b" : "#1776bb" }}>{r.level}</span></div>
         <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2"><div><div className="text-xs uppercase tracking-wider t4">Hazards</div><p className="mt-1 t2">{r.hazards}</p></div><div><div className="text-xs uppercase tracking-wider t4">Mitigations</div><p className="mt-1 t2">{r.mitigations}</p></div></div>
-        <div className="mt-3 flex justify-end gap-2 border-t bd pt-3"><Btn onClick={() => setModal({ type: "risk", item: r })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("riskAssessments", r.id)}><Trash2 size={14} /></Btn></div></div>)}</div>}</>);
+        {can && <div className="mt-3 flex justify-end gap-2 border-t bd pt-3"><Btn onClick={() => setModal({ type: "risk", item: r })}><Pencil size={14} />Edit</Btn><Btn variant="danger" onClick={() => remove("riskAssessments", r.id)}><Trash2 size={14} /></Btn></div>}</div>)}</div>}</>);
 }
-function Maintenance({ data, setModal, remove, nameOf, setSetting }) {
+function Maintenance({ data, setModal, remove, nameOf, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("maintenance", data, setSetting);
+  const csv = useCsvImportExport("maintenance", MAINTENANCE_CSV_FIELDS, data.maintenance, upsert, "MX");
   const columns = [
     { id: "date", label: "Date", cell: m => <Cell mono>{m.date}</Cell> },
     { id: "aircraft", label: "Aircraft", cell: m => <Cell mono>{nameOf("aircraft", m.aircraft)}</Cell> },
@@ -1794,14 +2152,19 @@ function Maintenance({ data, setModal, remove, nameOf, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Maintenance" subtitle="Service history per aircraft."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "maintenance" })}><Plus size={15} />Log service</Btn></div>} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "maintenance" })}><Plus size={15} />Log service</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     {data.maintenance.length === 0 ? <Empty icon={Wrench} label="No maintenance records" />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{data.maintenance.map(m => <Row key={m.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(m)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "maintenance", item: m })} onDelete={() => remove("maintenance", m.id)} /></Td></Row>)}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "maintenance", item: m }) : null} onDelete={can ? () => remove("maintenance", m.id) : null} /></Td></Row>)}</Table>}</>);
 }
-function Incidents({ data, setModal, remove, nameOf, setSetting }) {
+function Incidents({ data, setModal, remove, nameOf, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("incidents", data, setSetting);
+  const csv = useCsvImportExport("incident", INCIDENT_CSV_FIELDS, data.incidents, upsert, "INC");
   const columns = [
     { id: "date", label: "Date", cell: i => <Cell mono>{i.date}</Cell> },
     { id: "aircraft", label: "Aircraft", cell: i => <Cell mono>{nameOf("aircraft", i.aircraft)}</Cell> },
@@ -1812,16 +2175,21 @@ function Incidents({ data, setModal, remove, nameOf, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Incidents" subtitle="Reportable events and resolutions."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "incident" })}><Plus size={15} />Report incident</Btn></div>} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "incident" })}><Plus size={15} />Report incident</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     {data.incidents.length === 0 ? <Empty icon={AlertTriangle} label="No incidents" hint="A clean record is a good record." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{data.incidents.map(i => <Row key={i.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(i)}</React.Fragment>)}
-        <Td><RowActions onEdit={() => setModal({ type: "incident", item: i })} onDelete={() => remove("incidents", i.id)} /></Td></Row>)}</Table>}</>);
+        <Td><RowActions onEdit={can ? () => setModal({ type: "incident", item: i }) : null} onDelete={can ? () => remove("incidents", i.id) : null} /></Td></Row>)}</Table>}</>);
 }
-function Aircraft({ data, setModal, remove, highlight, setSetting }) {
+function Aircraft({ data, setModal, remove, highlight, setSetting, upsert, can = true }) {
   const now = new Date();
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("aircraft", data, setSetting);
+  const csv = useCsvImportExport("aircraft", AIRCRAFT_CSV_FIELDS, data.aircraft, upsert, "AC");
   const columns = [
     { id: "tail", label: "Tail / ID", cell: a => <Cell mono>{a.tail}</Cell> },
     { id: "model", label: "Model", cell: a => <Cell>{a.model}</Cell> },
@@ -1838,15 +2206,20 @@ function Aircraft({ data, setModal, remove, highlight, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Aircraft" subtitle="Fleet register."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "aircraft" })}><Plus size={15} />Add aircraft</Btn></div>} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "aircraft" })}><Plus size={15} />Add aircraft</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     <Table cols={[...visCols.map(c => c.label), ""]}>{data.aircraft.map(a => {
       const hl = highlight?.coll === "aircraft" && highlight.id === a.id;
       return <Row key={a.id} hl={hl} innerRef={hl ? hlRef : null}>
       {visCols.map(c => <React.Fragment key={c.id}>{c.cell(a)}</React.Fragment>)}
-      <Td><RowActions onEdit={() => setModal({ type: "aircraft", item: a })} onDelete={() => remove("aircraft", a.id)} /></Td></Row>; })}</Table></>);
+      <Td><RowActions onEdit={can ? () => setModal({ type: "aircraft", item: a }) : null} onDelete={can ? () => remove("aircraft", a.id) : null} /></Td></Row>; })}</Table></>);
 }
-function Batteries({ data, setModal, remove, setSetting }) {
+function Batteries({ data, setModal, remove, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("batteries", data, setSetting);
+  const csv = useCsvImportExport("battery", BATTERY_CSV_FIELDS, data.batteries, upsert, "BAT");
   const columns = [
     { id: "label", label: "Label", cell: b => <Cell mono>{b.label}</Cell> },
     { id: "chem", label: "Chemistry", cell: b => <Cell>{b.chem}</Cell> },
@@ -1859,22 +2232,69 @@ function Batteries({ data, setModal, remove, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Batteries" subtitle="Pack inventory and health."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "battery" })}><Plus size={15} />Add battery</Btn></div>} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "battery" })}><Plus size={15} />Add battery</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     <Table cols={[...visCols.map(c => c.label), ""]}>{data.batteries.map(b => <Row key={b.id}>
       {visCols.map(c => <React.Fragment key={c.id}>{c.cell(b)}</React.Fragment>)}
-      <Td><RowActions onEdit={() => setModal({ type: "battery", item: b })} onDelete={() => remove("batteries", b.id)} /></Td></Row>)}</Table></>);
+      <Td><RowActions onEdit={can ? () => setModal({ type: "battery", item: b }) : null} onDelete={can ? () => remove("batteries", b.id) : null} /></Td></Row>)}</Table></>);
 }
-function Workflows({ data, setModal, remove }) {
-  return (<><PageHeader title="Workflows" subtitle="Standard operating sequences." action={<Btn variant="primary" onClick={() => setModal({ type: "workflow" })}><Plus size={15} />New workflow</Btn>} />
+function Equipment({ data, setModal, remove, nameOf, highlight, setSetting, upsert, can = true }) {
+  const hlRef = useHighlightScroll(highlight);
+  const { hidden, toggle, resetCols } = useHiddenColumns("equipment", data, setSetting);
+  const list = data.equipment || [];
+  const csv = useCsvImportExport("equipment", EQUIPMENT_CSV_FIELDS, list, upsert, "EQ");
+  const columns = [
+    { id: "name", label: "Name", cell: e => <Cell>{e.name}</Cell> },
+    { id: "category", label: "Category", cell: e => <Cell>{e.category}</Cell> },
+    { id: "serial", label: "Serial", cell: e => <Cell mono>{e.serial || "—"}</Cell> },
+    { id: "aircraft", label: "Aircraft", cell: e => <Cell mono>{e.aircraftId ? nameOf("aircraft", e.aircraftId) : "—"}</Cell> },
+    { id: "mission", label: "Mission", cell: e => <Cell>{e.missionId ? (data.missions.find(m => m.id === e.missionId)?.name || "—") : "—"}</Cell> },
+    { id: "status", label: "Status", cell: e => <Td><Badge value={e.status} /></Td> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Equipment" subtitle="Payload and ground-support inventory — cameras, sensors, controllers, ground stations."
+    action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "equipment" })}><Plus size={15} />Add equipment</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
+    {list.length === 0 ? <Empty icon={Camera} label="No equipment yet" hint="Add cameras, sensors, controllers, or ground stations, and optionally link them to an aircraft or mission." />
+      : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(e => { const hl = highlight?.coll === "equipment" && highlight.id === e.id;
+        return <Row key={e.id} hl={hl} innerRef={hl ? hlRef : null}>
+        {visCols.map(c => <React.Fragment key={c.id}>{c.cell(e)}</React.Fragment>)}
+        <Td><RowActions onEdit={can ? () => setModal({ type: "equipment", item: e }) : null} onDelete={can ? () => remove("equipment", e.id) : null} /></Td></Row>; })}</Table>}</>);
+}
+function Workflows({ data, setModal, remove, setSetting, can = true }) {
+  const [viewMode, setViewMode] = useState("card");
+  const { hidden, toggle, resetCols } = useHiddenColumns("workflows", data, setSetting);
+  const columns = [
+    { id: "name", label: "Name", cell: w => <Cell>{w.name}</Cell> },
+    { id: "steps", label: "Steps", cell: w => <Cell mono>{w.steps.length}</Cell> },
+    { id: "sequence", label: "Sequence", cell: w => <Cell>{w.steps.join(" → ")}</Cell> },
+  ];
+  const visCols = columns.filter(c => !hidden.includes(c.id));
+  return (<><PageHeader title="Workflows" subtitle="Standard operating sequences."
+    action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
+      {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "workflow" })}><Plus size={15} />New workflow</Btn>}</div>} />
     {data.workflows.length === 0 ? <Empty icon={Workflow} label="No workflows" />
-      : <div className="space-y-3">{data.workflows.map(w => <div key={w.id} className="rounded-xl border bd sf p-4"><div className="flex items-center justify-between"><h3 className="font-semibold t1">{w.name}</h3><RowActions onEdit={() => setModal({ type: "workflow", item: w })} onDelete={() => remove("workflows", w.id)} /></div>
+      : viewMode === "list"
+      ? <Table cols={[...visCols.map(c => c.label), ""]}>{data.workflows.map(w => <Row key={w.id}>
+          {visCols.map(c => <React.Fragment key={c.id}>{c.cell(w)}</React.Fragment>)}
+          <Td><RowActions onEdit={can ? () => setModal({ type: "workflow", item: w }) : null} onDelete={can ? () => remove("workflows", w.id) : null} /></Td></Row>)}</Table>
+      : <div className="space-y-3">{data.workflows.map(w => <div key={w.id} className="rounded-xl border bd sf p-4"><div className="flex items-center justify-between"><h3 className="font-semibold t1">{w.name}</h3><RowActions onEdit={can ? () => setModal({ type: "workflow", item: w }) : null} onDelete={can ? () => remove("workflows", w.id) : null} /></div>
         <div className="mt-3 flex flex-wrap items-center gap-1.5">{w.steps.map((s, i) => <React.Fragment key={i}>
           <span className="rounded-md border bd sf2 px-2.5 py-1 text-xs t2"><span className="mr-1.5 font-mono t4">{String(i + 1).padStart(2, "0")}</span>{s}</span>
           {i < w.steps.length - 1 && <ChevronRight size={13} className="t4" />}</React.Fragment>)}</div></div>)}</div>}</>);
 }
-function UsersView({ data, setModal, remove, highlight, setSetting }) {
+function UsersView({ data, setModal, remove, highlight, setSetting, upsert, can = true }) {
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("users", data, setSetting);
+  const csv = useCsvImportExport("user", USER_CSV_FIELDS, data.users, upsert, "OP");
   const columns = [
     { id: "name", label: "Name", cell: u => <Cell>{u.name}</Cell> },
     { id: "role", label: "Role", cell: u => <Cell>{u.role}</Cell> },
@@ -1885,12 +2305,16 @@ function UsersView({ data, setModal, remove, highlight, setSetting }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Users" subtitle="Operators and crew."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
-      <Btn variant="primary" onClick={() => setModal({ type: "user" })}><Plus size={15} />Add user</Btn></div>} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
+      {can && <Btn variant="primary" onClick={() => setModal({ type: "user" })}><Plus size={15} />Add user</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     <Table cols={[...visCols.map(c => c.label), ""]}>{data.users.map(u => {
       const hl = highlight?.coll === "users" && highlight.id === u.id;
       return <Row key={u.id} hl={hl} innerRef={hl ? hlRef : null}>
       {visCols.map(c => <React.Fragment key={c.id}>{c.cell(u)}</React.Fragment>)}
-      <Td><RowActions onEdit={() => setModal({ type: "user", item: u })} onDelete={() => remove("users", u.id)} /></Td></Row>; })}</Table></>);
+      <Td><RowActions onEdit={can ? () => setModal({ type: "user", item: u }) : null} onDelete={can ? () => remove("users", u.id) : null} /></Td></Row>; })}</Table></>);
 }
 
 /* ============================ modal forms ============================ */
@@ -1900,6 +2324,7 @@ const CONFIG = {
   risk: { coll: "riskAssessments", prefix: "RA", title: "risk assessment" }, maintenance: { coll: "maintenance", prefix: "MX", title: "maintenance record" },
   incident: { coll: "incidents", prefix: "INC", title: "incident" }, aircraft: { coll: "aircraft", prefix: "AC", title: "aircraft" },
   battery: { coll: "batteries", prefix: "BAT", title: "battery" }, workflow: { coll: "workflows", prefix: "WF", title: "workflow" }, user: { coll: "users", prefix: "OP", title: "user" },
+  equipment: { coll: "equipment", prefix: "EQ", title: "equipment" },
   checklistRun: { coll: "checklistRuns", prefix: "CR", title: "checklist run" },
   waiver: { coll: "waivers", prefix: "WV", title: "waiver / COA" },
   document: { coll: "documents", prefix: "DOC", title: "document" },
@@ -1908,14 +2333,15 @@ const today = () => new Date().toISOString().slice(0, 10);
 function init(modal) {
   if (modal.item && modal.item.id) return { ...modal.item };
   const base = {
-    mission: { name: "", date: today(), status: "Planned", location: "", objective: "", operators: [], aircraft: [], laanc: "Not required", risk: "Low" },
+    mission: { name: "", date: today(), status: "Planned", location: "", objective: "", operators: [], aircraft: [], laanc: "Not required", risk: "Low", lat: "", lon: "" },
     flight: { missionId: modal.item?.missionId || "", date: today(), status: "Completed", operator: "", aircraft: "", batteries: [], dur: 0, maxAlt: 0, dist: 0, location: "", notes: "" },
     laanc: { missionId: "", airspace: "", ceiling: 400, status: "Pending", start: "", end: "", conf: "" },
-    checklist: { name: "", items: [{ t: "", done: false }] }, risk: { name: "", date: today(), level: "Low", hazards: "", mitigations: "" },
+    checklist: { name: "", items: [{ t: "", done: false }] }, risk: { missionId: modal.item?.missionId || "", name: "", date: today(), level: "Low", hazards: "", mitigations: "" },
     maintenance: { aircraft: "", date: today(), type: "Inspection", desc: "", tech: "" }, incident: { date: today(), severity: "Minor", aircraft: "", desc: "", resolution: "" },
     aircraft: { tail: "", model: "", serial: "", type: "Multirotor", status: "Available", hours: 0, cycles: 0, lastMx: today(),
       faaReg: "", regExp: "", remoteId: "", mxIntervalHours: 0, mxIntervalCycles: 0, mxIntervalDays: 0, mxAtHours: 0, mxAtCycles: 0 },
     battery: { label: "", chem: "", capacity: 0, cycles: 0, health: 100, status: "Charged", cycleLimit: 0 }, workflow: { name: "", steps: [""] },
+    equipment: { name: "", category: "Camera", serial: "", status: "Available", aircraftId: "", missionId: modal.item?.missionId || "", notes: "" },
     user: { name: "", role: "Remote PIC", cert: "Part 107", certExp: "", status: "Active" },
     checklistRun: { flightId: modal.item?.flightId || "", missionId: modal.item?.missionId || "", checklistId: "", name: "", date: today(), by: "", items: [], complete: false },
     waiver: { name: "", type: "Part 107 Waiver", scope: "", number: "", issued: today(), expiry: "", status: "Active" },
@@ -1938,6 +2364,7 @@ function validate(type, f) {
     case "incident": need(f.aircraft, "Select an aircraft."); need(txt(f.desc), "Description is required."); break;
     case "aircraft": need(txt(f.tail), "Tail / ID is required."); need(txt(f.model), "Model is required."); break;
     case "battery": need(txt(f.label), "Label is required."); need(txt(f.chem), "Chemistry is required."); break;
+    case "equipment": need(txt(f.name), "Name is required."); need(txt(f.category), "Category is required."); break;
     case "workflow": need(txt(f.name), "Workflow name is required."); need((f.steps || []).some(s => txt(s)), "Add at least one step."); break;
     case "user": need(txt(f.name), "Name is required."); need(txt(f.certExp), "Certification expiry is required."); break;
     case "checklistRun": need(f.checklistId, "Pick a checklist to run."); need(f.flightId || f.missionId, "Attach the run to a flight or mission."); break;
@@ -1947,10 +2374,64 @@ function validate(type, f) {
   }
   return e;
 }
+// Parses a KML or GPX file into a flat list of {lat, lon} points (first polygon/track found) using the
+// browser's built-in DOMParser — no XML library needed, keeping this dependency-free.
+function parseGeoFile(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.querySelector("parsererror")) throw new Error("Couldn't parse that file as XML.");
+  const coordsEl = doc.querySelector("coordinates"); // KML: Polygon outerBoundaryIs or LineString
+  if (coordsEl) {
+    const pts = coordsEl.textContent.trim().split(/\s+/).map(triplet => {
+      const [lon, lat] = triplet.split(",").map(Number);
+      return { lat, lon };
+    }).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+    if (pts.length) return pts;
+  }
+  const trkpts = [...doc.querySelectorAll("trkpt, rtept")]; // GPX track/route points
+  if (trkpts.length) {
+    const pts = trkpts.map(p => ({ lat: +p.getAttribute("lat"), lon: +p.getAttribute("lon") })).filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lon));
+    if (pts.length) return pts;
+  }
+  throw new Error("No <coordinates> (KML) or <trkpt>/<rtept> (GPX) found.");
+}
 function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeModal }) {
   const [form, setForm] = useState(() => init(modal));
   const [errors, setErrors] = useState([]);
+  const [geo, setGeo] = useState({ loading: false, msg: "" });
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  // Looks up the mission's free-text location via Nominatim (OSM's geocoder — CORS-enabled, no key/relay
+  // needed) and fills in Lat/Lon. Best-effort: leaves the fields untouched on a miss or network failure.
+  const geocodeMission = async () => {
+    const q = (form.location || "").trim();
+    if (!q) { setGeo({ loading: false, msg: "Add a location first." }); return; }
+    setGeo({ loading: true, msg: "" });
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`);
+      const j = await r.json();
+      if (!j.length) { setGeo({ loading: false, msg: "No match found for that location." }); return; }
+      set("lat", (+j[0].lat).toFixed(4)); set("lon", (+j[0].lon).toFixed(4));
+      setGeo({ loading: false, msg: `Found: ${j[0].display_name}` });
+    } catch { setGeo({ loading: false, msg: "Geocoding lookup failed (offline?)." }); }
+  };
+  // Mission flight-planning area — imported from a KML/GPX file or built point-by-point. Rendered as a
+  // polygon overlay on the Airspace map (see TileMap's `polygons` prop), no separate map/editor needed.
+  const [geoMsg, setGeoMsg] = useState("");
+  const [pointDraft, setPointDraft] = useState({ lat: "", lon: "" });
+  const importGeofence = () => {
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".kml,.gpx,application/vnd.google-earth.kml+xml,application/gpx+xml";
+    inp.onchange = async () => {
+      const f = inp.files?.[0]; if (!f) return;
+      try { const pts = parseGeoFile(await f.text()); set("geofence", pts); setGeoMsg(`Imported ${pts.length} points from ${f.name}.`); }
+      catch (err) { setGeoMsg(err.message || "Couldn't read that file as KML or GPX."); }
+    };
+    inp.click();
+  };
+  const addPoint = () => {
+    const lat = +pointDraft.lat, lon = +pointDraft.lon;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    set("geofence", [...(form.geofence || []), { lat, lon }]); setPointDraft({ lat: "", lon: "" });
+  };
+  const removePoint = (i) => set("geofence", (form.geofence || []).filter((_, x) => x !== i));
   const save = () => {
     const errs = validate(modal.type, form);
     if (errs.length) { setErrors(errs); return; }
@@ -1975,12 +2456,34 @@ function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeMo
         return <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-500"><AlertTriangle size={12} className="mr-1 inline" />{who.join(", ")} already assigned on {form.date} in: {clash.map(mn => mn.name).join(", ")}</p>;
       })()}
       <Field label="Pre-assign aircraft"><MultiPick options={data.aircraft} value={form.aircraft} onChange={v => set("aircraft", v)} labelFn={o => o.tail} /></Field>
-      <div className="grid grid-cols-2 gap-3"><Field label="LAANC"><TextInput value={form.laanc} onChange={e => set("laanc", e.target.value)} /></Field><Field label="Risk level"><Select value={form.risk} onChange={e => set("risk", e.target.value)}>{["Low", "Moderate", "High"].map(s => <option key={s}>{s}</option>)}</Select></Field></div></>}
+      <div className="grid grid-cols-2 gap-3"><Field label="LAANC"><TextInput value={form.laanc} onChange={e => set("laanc", e.target.value)} /></Field><Field label="Risk level"><Select value={form.risk} onChange={e => set("risk", e.target.value)}>{["Low", "Moderate", "High"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
+      <div className="grid grid-cols-2 gap-3"><Field label="Lat (optional, for Airspace map)"><TextInput type="number" step="any" value={form.lat} onChange={e => set("lat", e.target.value)} placeholder="38.95" /></Field><Field label="Lon (optional)"><TextInput type="number" step="any" value={form.lon} onChange={e => set("lon", e.target.value)} placeholder="-77.45" /></Field></div>
+      <div className="flex items-center gap-2"><Btn onClick={geocodeMission} disabled={geo.loading}><Search size={13} className={geo.loading ? "animate-pulse" : ""} />Look up from location</Btn>
+        {geo.msg && <span className="text-[11px] t4">{geo.msg}</span>}</div>
+      <div className="border-t bd pt-3">
+        <div className="mb-1.5 flex items-center justify-between"><span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider t4"><Crosshair size={13} />Flight area / geofence</span>
+          <Btn onClick={importGeofence}><Upload size={13} />Import KML/GPX</Btn></div>
+        {(form.geofence || []).length > 0 && <div className="mb-2 max-h-28 space-y-1 overflow-y-auto rounded-lg border bd sf2 p-2">
+          {form.geofence.map((p, i) => <div key={i} className="flex items-center justify-between text-xs t2">
+            <span className="font-mono">{(+p.lat).toFixed(4)}, {(+p.lon).toFixed(4)}</span>
+            <IconBtn onClick={() => removePoint(i)} label="Remove point" className="!p-0 t4 hover:!bg-transparent hover:text-rose-400"><X size={12} /></IconBtn></div>)}
+        </div>}
+        <div className="flex gap-1.5">
+          <TextInput type="number" step="any" placeholder="Lat" value={pointDraft.lat} onChange={e => setPointDraft(d => ({ ...d, lat: e.target.value }))} />
+          <TextInput type="number" step="any" placeholder="Lon" value={pointDraft.lon} onChange={e => setPointDraft(d => ({ ...d, lon: e.target.value }))} />
+          <Btn onClick={addPoint}><Plus size={13} />Add point</Btn>
+        </div>
+        <p className="pt-1.5 text-[11px] t4">{geoMsg || ((form.geofence || []).length >= 3
+          ? `${form.geofence.length}-point area shown on the Airspace map.`
+          : "Add at least 3 points (or import a file) to show this mission's flight area on the Airspace map.")}</p>
+      </div></>}
     {T === "flight" && <><Field label="Mission"><Select value={form.missionId} onChange={e => set("missionId", e.target.value)}><option value="">— None —</option>{data.missions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></Field>
       <div className="grid grid-cols-2 gap-3"><Field label="Date"><TextInput type="date" value={form.date} onChange={e => set("date", e.target.value)} /></Field><Field label="Status"><Select value={form.status} onChange={e => set("status", e.target.value)}>{["Planned", "Active", "Completed", "Cancelled"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
       <div className="grid grid-cols-2 gap-3"><Field label="Remote PIC"><Select value={form.operator} onChange={e => set("operator", e.target.value)}><option value="">— Select —</option>{data.users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}</Select></Field><Field label="Aircraft"><Select value={form.aircraft} onChange={e => set("aircraft", e.target.value)}><option value="">— Select —</option>{data.aircraft.map(a => <option key={a.id} value={a.id}>{a.tail}</option>)}</Select></Field></div>
       <Field label="Batteries used"><MultiPick options={data.batteries} value={form.batteries} onChange={v => set("batteries", v)} labelFn={o => o.label} /></Field>
-      <div className="grid grid-cols-3 gap-3"><Field label="Duration (min)"><TextInput type="number" value={form.dur} onChange={e => set("dur", +e.target.value)} /></Field><Field label="Max alt (m)"><TextInput type="number" value={form.maxAlt} onChange={e => set("maxAlt", +e.target.value)} /></Field><Field label="Distance (km)"><TextInput type="number" value={form.dist} onChange={e => set("dist", +e.target.value)} /></Field></div>
+      <div className="grid grid-cols-3 gap-3"><Field label="Duration (min)"><TextInput type="number" value={form.dur} onChange={e => set("dur", +e.target.value)} /></Field>
+        <Field label={`Max alt (${dispAlt(0, data).unit})`}><TextInput type="number" value={round2(dispAlt(form.maxAlt, data).value)} onChange={e => set("maxAlt", toAlt(e.target.value, data))} /></Field>
+        <Field label={`Distance (${dispDist(0, data).unit})`}><TextInput type="number" value={round2(dispDist(form.dist, data).value)} onChange={e => set("dist", toDist(e.target.value, data))} /></Field></div>
       <Field label="Location"><TextInput value={form.location} onChange={e => set("location", e.target.value)} /></Field><Field label="Notes"><TextArea value={form.notes} onChange={e => set("notes", e.target.value)} /></Field></>}
     {T === "laanc" && <><Field label="Mission"><Select value={form.missionId} onChange={e => set("missionId", e.target.value)}><option value="">— None —</option>{data.missions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></Field>
       <Field label="Airspace"><TextInput value={form.airspace} onChange={e => set("airspace", e.target.value)} placeholder="KXYZ Class D" /></Field>
@@ -1988,7 +2491,8 @@ function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeMo
       <div className="grid grid-cols-2 gap-3"><Field label="Start"><TextInput type="datetime-local" value={form.start} onChange={e => set("start", e.target.value)} /></Field><Field label="End"><TextInput type="datetime-local" value={form.end} onChange={e => set("end", e.target.value)} /></Field></div>
       <Field label="Confirmation #"><TextInput value={form.conf} onChange={e => set("conf", e.target.value)} /></Field></>}
     {T === "checklist" && <ChecklistForm form={form} setForm={setForm} />}
-    {T === "risk" && <><Field label="Name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} /></Field>
+    {T === "risk" && <><Field label="Mission (optional)"><Select value={form.missionId || ""} onChange={e => set("missionId", e.target.value)}><option value="">— None —</option>{data.missions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></Field>
+      <Field label="Name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} /></Field>
       <div className="grid grid-cols-2 gap-3"><Field label="Date"><TextInput type="date" value={form.date} onChange={e => set("date", e.target.value)} /></Field><Field label="Level"><Select value={form.level} onChange={e => set("level", e.target.value)}>{["Low", "Moderate", "High"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
       <Field label="Hazards"><TextArea value={form.hazards} onChange={e => set("hazards", e.target.value)} /></Field><Field label="Mitigations"><TextArea value={form.mitigations} onChange={e => set("mitigations", e.target.value)} /></Field></>}
     {T === "maintenance" && <><Field label="Aircraft"><Select value={form.aircraft} onChange={e => set("aircraft", e.target.value)}><option value="">— Select —</option>{data.aircraft.map(a => <option key={a.id} value={a.id}>{a.tail}</option>)}</Select></Field>
@@ -2012,9 +2516,15 @@ function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeMo
       <div className="grid grid-cols-3 gap-3"><Field label="Capacity (Wh)"><TextInput type="number" value={form.capacity} onChange={e => set("capacity", +e.target.value)} /></Field><Field label="Cycles"><TextInput type="number" value={form.cycles} onChange={e => set("cycles", +e.target.value)} /></Field><Field label="Health (%)"><TextInput type="number" value={form.health} onChange={e => set("health", +e.target.value)} /></Field></div>
       <Field label="Rated cycle life (0 = none)"><TextInput type="number" value={form.cycleLimit || 0} onChange={e => set("cycleLimit", +e.target.value)} /></Field>
       <p className="-mt-1 text-[11px] t4">Health fades automatically as logged flights add cycles; alerts fire near and past this limit.</p></>}
+    {T === "equipment" && <><div className="grid grid-cols-2 gap-3"><Field label="Name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} placeholder="Zenmuse H20T" /></Field>
+      <Field label="Category"><Select value={form.category} onChange={e => set("category", e.target.value)}>{["Camera", "Sensor", "Controller", "Ground Station", "Payload", "Other"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
+      <div className="grid grid-cols-2 gap-3"><Field label="Serial"><TextInput value={form.serial} onChange={e => set("serial", e.target.value)} /></Field><Field label="Status"><Select value={form.status} onChange={e => set("status", e.target.value)}>{["Available", "In use", "Maintenance", "Storage"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
+      <div className="grid grid-cols-2 gap-3"><Field label="Linked aircraft (optional)"><Select value={form.aircraftId} onChange={e => set("aircraftId", e.target.value)}><option value="">— None —</option>{data.aircraft.map(a => <option key={a.id} value={a.id}>{a.tail}</option>)}</Select></Field>
+        <Field label="Linked mission (optional)"><Select value={form.missionId} onChange={e => set("missionId", e.target.value)}><option value="">— None —</option>{data.missions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</Select></Field></div>
+      <Field label="Notes"><TextArea value={form.notes} onChange={e => set("notes", e.target.value)} /></Field></>}
     {T === "workflow" && <WorkflowForm form={form} setForm={setForm} />}
     {T === "user" && <><Field label="Name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} /></Field>
-      <div className="grid grid-cols-2 gap-3"><Field label="Role"><Select value={form.role} onChange={e => set("role", e.target.value)}>{["Remote PIC", "Visual Observer", "Payload Operator", "Maintenance Tech", "Ops Manager"].map(s => <option key={s}>{s}</option>)}</Select></Field><Field label="Status"><Select value={form.status} onChange={e => set("status", e.target.value)}>{["Active", "Inactive"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
+      <div className="grid grid-cols-2 gap-3"><Field label="Role"><Select value={form.role} onChange={e => set("role", e.target.value)}>{ROLES.map(s => <option key={s}>{s}</option>)}</Select></Field><Field label="Status"><Select value={form.status} onChange={e => set("status", e.target.value)}>{["Active", "Inactive"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
       <div className="grid grid-cols-2 gap-3"><Field label="Certification"><TextInput value={form.cert} onChange={e => set("cert", e.target.value)} /></Field><Field label="Cert expiry"><TextInput type="date" value={form.certExp} onChange={e => set("certExp", e.target.value)} /></Field></div></>}
     {T === "checklistRun" && <ChecklistRunForm form={form} setForm={setForm} data={data} />}
     {T === "waiver" && <><div className="grid grid-cols-2 gap-3"><Field label="Name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} placeholder="Night operations" /></Field><Field label="Type"><Select value={form.type} onChange={e => set("type", e.target.value)}>{["Part 107 Waiver", "COA", "Exemption (44807)", "Authorization"].map(s => <option key={s}>{s}</option>)}</Select></Field></div>
@@ -2030,7 +2540,7 @@ function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeMo
       <div className="grid grid-cols-2 gap-3"><Field label="Issue date"><TextInput type="date" value={form.issueDate} onChange={e => set("issueDate", e.target.value)} /></Field><Field label="Expiry"><TextInput type="date" value={form.expiry} onChange={e => set("expiry", e.target.value)} /></Field></div>
       <Field label="File or reference">
         <div className="flex flex-wrap items-center gap-2"><Btn onClick={() => pickDocFile(setForm)}><Upload size={13} />{form.fileName ? "Replace file" : "Upload file"}</Btn>
-          {form.fileName && <span className="inline-flex items-center gap-1 text-xs t2"><Paperclip size={12} />{form.fileName}<button type="button" onClick={() => setForm(f => ({ ...f, fileName: "", fileData: "" }))} className="t4 hover:text-rose-400"><X size={12} /></button></span>}</div>
+          {form.fileName && <span className="inline-flex items-center gap-1 text-xs t2"><Paperclip size={12} />{form.fileName}<IconBtn onClick={() => setForm(f => ({ ...f, fileName: "", fileData: "" }))} label="Remove file" className="!p-0 t4 hover:!bg-transparent hover:text-rose-400"><X size={12} /></IconBtn></span>}</div>
         <div className="mt-2"><TextInput value={form.refUrl} onChange={e => set("refUrl", e.target.value)} placeholder="…or paste an external link (Drive, SharePoint, URL)" disabled={!!form.fileName} /></div>
         <p className="pt-1 text-[11px] t4">Upload a small file (under 3 MB) or reference one stored elsewhere by link.</p></Field>
       <Field label="Notes"><TextArea value={form.notes} onChange={e => set("notes", e.target.value)} /></Field></>}
@@ -2070,12 +2580,12 @@ function ChecklistRunForm({ form, setForm, data }) {
 function ChecklistForm({ form, setForm }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v })); const setItem = (i, t) => set("items", form.items.map((it, x) => x === i ? { ...it, t } : it));
   return <div className="space-y-4"><Field label="Checklist name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} /></Field>
-    <div><span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">Items</span><div className="space-y-2">{form.items.map((it, i) => <div key={i} className="flex gap-2"><TextInput value={it.t} onChange={e => setItem(i, e.target.value)} /><button onClick={() => set("items", form.items.filter((_, x) => x !== i))} className="rounded p-2 t4 hover:text-rose-400"><X size={16} /></button></div>)}</div>
+    <div><span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">Items</span><div className="space-y-2">{form.items.map((it, i) => <div key={i} className="flex gap-2"><TextInput value={it.t} onChange={e => setItem(i, e.target.value)} /><IconBtn onClick={() => set("items", form.items.filter((_, x) => x !== i))} label="Remove item" className="!rounded !p-2 hover:text-rose-400"><X size={16} /></IconBtn></div>)}</div>
     <Btn className="mt-2" onClick={() => set("items", [...form.items, { t: "", done: false }])}><Plus size={14} />Add item</Btn></div></div>;
 }
 function WorkflowForm({ form, setForm }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v })); const setStep = (i, v) => set("steps", form.steps.map((s, x) => x === i ? v : s));
   return <div className="space-y-4"><Field label="Workflow name"><TextInput value={form.name} onChange={e => set("name", e.target.value)} /></Field>
-    <div><span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">Steps</span><div className="space-y-2">{form.steps.map((s, i) => <div key={i} className="flex items-center gap-2"><span className="font-mono text-xs t4">{String(i + 1).padStart(2, "0")}</span><TextInput value={s} onChange={e => setStep(i, e.target.value)} /><button onClick={() => set("steps", form.steps.filter((_, x) => x !== i))} className="rounded p-2 t4 hover:text-rose-400"><X size={16} /></button></div>)}</div>
+    <div><span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">Steps</span><div className="space-y-2">{form.steps.map((s, i) => <div key={i} className="flex items-center gap-2"><span className="font-mono text-xs t4">{String(i + 1).padStart(2, "0")}</span><TextInput value={s} onChange={e => setStep(i, e.target.value)} /><IconBtn onClick={() => set("steps", form.steps.filter((_, x) => x !== i))} label="Remove step" className="!rounded !p-2 hover:text-rose-400"><X size={16} /></IconBtn></div>)}</div>
     <Btn className="mt-2" onClick={() => set("steps", [...form.steps, ""])}><Plus size={14} />Add step</Btn></div></div>;
 }
