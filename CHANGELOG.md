@@ -10,6 +10,53 @@ Note: `SCHEMA_VERSION` (in `FlightOps-UAS.jsx`) tracks saved-workspace migration
 independently of the package version, since it only changes when the data shape
 changes, not on every release.
 
+## [2.3.0] — 2026-06-30
+
+### Added
+- **Roles & permissions** — added `Operations Supervisor`, `Flight Coordinator`, and an
+  `Admin` role, plus per-role configurable permissions in Settings → Roles & access. An
+  "Acting as" selector gates create/edit/delete across the app; it defaults to
+  unrestricted (no one selected), so existing single-operator workflows are unchanged.
+- **Equipment inventory** — a payload/ground-support register (cameras, sensors,
+  controllers, ground stations) that can be linked to an aircraft and/or mission, with
+  cascade-delete detachment and global-search integration, following the existing
+  Aircraft/Batteries pattern.
+- **Flight planning** — mission geofences via manual point entry or KML/GPX import
+  (parsed with the browser's `DOMParser`, no new dependency), rendered as polygon
+  overlays on the existing Airspace map. Missions with coordinates also show as map
+  markers, and a computed readiness chip (Assigned RPIC / LAANC / Risk Assessment)
+  appears on mission cards and list rows.
+- **Location geocoding** — a "Look up from location" button on the mission form fills
+  Lat/Lon from the free-text location via Nominatim (CORS-enabled, no relay needed).
+- **Bulk CSV import/export** — full-fidelity CSV export and validated import (reusing the
+  same `validate()` the modal forms use, with per-row error reporting) for Aircraft,
+  Users, Batteries, Equipment, Maintenance, and Incidents, plus a "Download CSV Template"
+  button (header-only CSV) beside Import on every CSV-enabled view.
+- **Configurable list views** — extended the existing Card/List toggle and configurable
+  columns to Checklists, Risk Assessments, and Workflows.
+- **Accessibility** — modal focus-trap / Escape-to-close / scroll-lock (shared by Modal
+  and ConfirmDialog with `role`/`aria-modal`/`aria-labelledby`), an `IconBtn` primitive
+  giving every icon-only control an `aria-label`/`title`, keyboard reordering
+  (`Alt`+`←`/`→`) for the nav rail, and `aria-current` on the rail, sidebar, and mobile
+  tab navigation.
+
+### Changed
+- **Units preference now applies throughout** — the Metric/Imperial setting converts
+  altitude/distance for display and input across the Flights table/form/report, Home, and
+  OPS Center telemetry, while values are stored canonically in metric.
+- Mobile: replaced fixed-width filter fields in OPS Center and Reporting with responsive
+  `w-full sm:w-*` variants so they stack cleanly on narrow screens.
+- **Airspace map** now renders mission markers and geofence polygons on the same
+  `TileMap` (no duplicate map implementation).
+
+### Fixed
+- Fixed a swap bug in the nav-rail reorder logic (moving an item onto its immediate
+  neighbor was a no-op), surfaced while adding keyboard reordering.
+
+### Migration
+- `SCHEMA_VERSION` 5 → 6: adds the `equipment` collection and mission `geofence` field.
+  Backward compatible — older saved workspaces migrate cleanly on load.
+
 ## [2.2.0] — 2026-06-26
 
 ### Added
