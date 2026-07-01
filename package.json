@@ -1,7 +1,7 @@
 {
   "name": "flightops",
   "private": true,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "FlightOps — a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
   "license": "Apache-2.0",
   "author": "Ian Rosario",
