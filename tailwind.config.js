@@ -11,6 +11,11 @@ export default {
     path.join(here, "FlightOps-UAS.jsx"),
     path.join(here, "src/**/*.{js,jsx,ts,tsx}"),
   ],
-  theme: { extend: {} },
+  theme: {
+    extend: {
+      // IDs, tail numbers and serials use Roboto Mono (slashed zero, clear 1/l/I).
+      fontFamily: { mono: ['"Roboto Mono Variable"', '"Roboto Mono"', "ui-monospace", "Consolas", "monospace"] },
+    },
+  },
   plugins: [],
 };
