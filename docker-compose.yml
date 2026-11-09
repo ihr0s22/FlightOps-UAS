@@ -13,6 +13,9 @@ services:
       # Locked to the app's own origin by default since this is meant for personal/LAN use,
       # not a publicly reachable relay. Widen if you're hitting it from a different host/port.
       ALLOWED_ORIGIN: "http://localhost:8080"
+      # Optional but recommended: set RELAY_TOKEN in a .env file next to this one, then paste the same
+      # value into Settings -> Relay & delivery -> Access token. Without it, /api is open to anyone who can reach the relay.
+      RELAY_TOKEN: "${RELAY_TOKEN:-}"
     volumes:
       - relay-data:/app/data
     restart: unless-stopped

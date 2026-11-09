@@ -15,7 +15,7 @@ import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./sr
 import {
   hasArtifactStore, fsSupported, loadState, saveState, clearState, setSaveStatus, subscribeSaveStatus,
   getDriveHandle, connectDrive, disconnectDrive, exportData, importData,
-  getSaveStatus, watchOtherTabs, requestPersistence, listBackups, readBackup,
+  getSaveStatus, watchOtherTabs, getRelayToken, setRelayToken, relayHeaders, requestPersistence, listBackups, readBackup,
 } from "./src/persistence.js";
 
 
@@ -581,6 +581,7 @@ function App() {
             className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs ${view === it.key ? "accsoft" : "t3"}`}>{it.label}</button>)}</div>}
 
         <div className="mx-auto max-w-6xl px-5 py-6">
+          <ViewBoundary resetKey={`${tab}:${view}`}>
           {tab === "home" && <Home {...{ data, nameOf, goManage, setSetting }} />}
           {tab === "schedule" && <Schedule {...{ data, nameOf, setModal, goManage }} />}
           {tab === "airspace" && <Airspace {...{ data, setSetting }} onSelectMission={id => goSearch("missions", id)} />}
@@ -604,6 +605,7 @@ function App() {
             {view === "workflows" && <Workflows {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
             {view === "users" && <UsersView {...{ data, setModal, remove, highlight, setSetting, upsert }} can={can.manageUsers} />}
           </>}
+          </ViewBoundary>
         </div>
       </main>
       {modal && <ModalRouter {...{ modal, data, upsert, saveFlight, saveMaintenance, closeModal }} />}
@@ -618,6 +620,24 @@ function App() {
         <Btn onClick={() => setOtherTab(false)}>Keep this tab</Btn></div>}
     </div>
   );
+}
+
+// Contains a crash to the one view that threw: the rest of the app (nav, other views, saving) keeps working.
+// Resets automatically when the user navigates elsewhere (resetKey changes). Data is never modified.
+class ViewBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null, key: props.resetKey }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  static getDerivedStateFromProps(props, state) { return props.resetKey !== state.key ? { error: null, key: props.resetKey } : null; }
+  componentDidCatch(error) { console.error("FlightOps view crashed:", error); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <div className="rounded-xl border bd sf p-6 text-center">
+      <AlertTriangle size={20} className="mx-auto mb-2 text-rose-400" />
+      <div className="text-sm font-semibold t1">This view hit an error</div>
+      <p className="mt-1 text-xs t3">Your data is safe and unchanged. Try again, or switch to another section.</p>
+      <div className="mt-3"><Btn variant="primary" onClick={() => this.setState({ error: null })}><RefreshCw size={13} />Try again</Btn></div>
+    </div>;
+  }
 }
 
 // Catches render crashes (e.g. malformed-but-accepted saved data) and shows the recoverable LoadError
@@ -923,7 +943,7 @@ function Airspace({ data, setSetting, onSelectMission }) {
         : relay
           ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=25`
           : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/25`;
-      const r = await fetch(url); const j = await r.json();
+      const r = await fetch(url, relay && url.startsWith(relay) ? { headers: relayHeaders() } : undefined); const j = await r.json();
       const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: a.track || 0, lat: a.lat, lon: a.lon }));
       setTraffic(ac.length ? ac : sample);
     } catch {
@@ -946,7 +966,7 @@ function Airspace({ data, setSetting, onSelectMission }) {
       } else {
         const relay = (data.settings.relay?.url || "").replace(/\/$/, "");
         const u = relay ? `${relay}/api/metar?ids=${as.station}` : `https://aviationweather.gov/api/data/metar?ids=${as.station}&format=json`;
-        const r = await fetch(u); const j = await r.json(); const m = Array.isArray(j) ? j[0] : j;
+        const r = await fetch(u, relay ? { headers: relayHeaders() } : undefined); const j = await r.json(); const m = Array.isArray(j) ? j[0] : j;
         if (!m) throw new Error();
         setWx({ wind: m.wdir != null ? `${m.wdir}° @ ${m.wspd} kt` : "—", temp: m.temp != null ? `${m.temp}°C` : "—", vis: m.visib != null ? `${m.visib} sm` : "—", cloud: (m.clouds || []).map(c => c.cover).join(" ") || "—", raw: m.rawOb, src: `METAR ${as.station}` });
       }
@@ -1314,7 +1334,7 @@ function Scheduled({ data, nameOf, update }) {
   };
   const relay = (data.settings.relay?.url || "").replace(/\/$/, "");
   const sendRelay = async s => {
-    try { const res = await fetch(`${relay}/api/reports/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s) });
+    try { const res = await fetch(`${relay}/api/reports/run`, { method: "POST", headers: relayHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(s) });
       update("scheduledReports", l => l.map(x => x.id === s.id ? { ...x, lastRun: new Date().toLocaleString() + " · relay" } : x));
       alert(res.ok ? "Queued on relay for delivery." : "Relay returned an error.");
     } catch { alert("Couldn't reach the relay — set its URL in Settings."); }
@@ -1510,18 +1530,19 @@ function RelayPanel({ data, setSetting }) {
   const [draft, setDraft] = useState(url);
   const [health, setHealth] = useState("");
   const [sync, setSync] = useState("");
+  const [token, setToken] = useState(() => getRelayToken());
   const base = () => (data.settings.relay?.url || draft).replace(/\/$/, "");
   const check = async () => {
     setHealth("checking");
-    try { const r = await fetch(`${base()}/health`); setHealth(r.ok ? "ok" : "fail"); }
+    try { const r = await fetch(`${base()}/health`); if (!r.ok) throw new Error(); const a = await fetch(`${base()}/api/snapshot`, { headers: relayHeaders() }); setHealth(a.status === 401 ? "fail" : "ok"); }
     catch { setHealth("fail"); }
   };
   const syncNow = async () => {
     setSync("syncing"); setSaveStatus("syncing");
     try {
-      const r = await fetch(`${base()}/api/snapshot`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+      const r = await fetch(`${base()}/api/snapshot`, { method: "POST", headers: relayHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(data) });
       if (!r.ok) throw new Error();
-      await fetch(`${base()}/api/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data.scheduledReports || []) }).catch(() => {});
+      await fetch(`${base()}/api/schedules`, { method: "POST", headers: relayHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(data.scheduledReports || []) }).catch(() => {});
       setSync("ok"); setSaveStatus("saved"); setTimeout(() => setSync(""), 3000);
     } catch { setSync("fail"); setSaveStatus("error"); }
   };
@@ -1530,12 +1551,15 @@ function RelayPanel({ data, setSetting }) {
       <Field label="Relay base URL"><div className="flex gap-1.5">
         <TextInput value={draft} onChange={e => setDraft(e.target.value)} placeholder="https://relay.yourdomain.com" />
       </div></Field>
+      <Field label="Access token (optional — matches the relay's RELAY_TOKEN; stored in this browser only, never exported)"><div className="flex gap-1.5">
+        <TextInput type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} placeholder="Leave blank if the relay has no token" />
+      </div></Field>
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        <Btn variant="primary" onClick={() => { setSetting(["relay", "url"], draft.trim()); check(); }}>Save</Btn>
+        <Btn variant="primary" onClick={() => { setSetting(["relay", "url"], draft.trim()); setRelayToken(token.trim()); check(); }}>Save</Btn>
         <Btn onClick={check}><Plug size={13} />Test</Btn>
         <Btn onClick={syncNow}><RefreshCw size={13} className={sync === "syncing" ? "animate-spin" : ""} />Sync to relay</Btn>
         {health === "ok" && <span className="text-xs acc">Reachable</span>}
-        {health === "fail" && <span className="text-xs text-rose-400">No response</span>}
+        {health === "fail" && <span className="text-xs text-rose-400">No response (or token rejected)</span>}
         {health === "checking" && <span className="text-xs t4">Checking…</span>}
         {sync === "ok" && <span className="text-xs acc">Synced to database</span>}
         {sync === "fail" && <span className="text-xs text-rose-400">Sync failed</span>}

@@ -17,7 +17,7 @@ npm install
 npm start
 ```
 
-Listens on `http://localhost:8787` by default (override with `PORT`).
+Listens on `http://localhost:8787` by default (override with `PORT`). Set `ALLOWED_ORIGIN` first (see below), e.g. `ALLOWED_ORIGIN=http://localhost:5173 npm start`.
 
 ## Point the app at it
 
@@ -39,14 +39,23 @@ Any small Node host works. Render's free tier is the path of least resistance:
 
 Fly.io and Railway work the same way if you'd rather use those.
 
-## Locking it down
+## Configuration and locking it down
 
-By default the relay accepts requests from any origin (`ALLOWED_ORIGIN=*`). If you deploy it
-publicly, set the `ALLOWED_ORIGIN` environment variable to your app's actual origin, e.g.:
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ALLOWED_ORIGIN` | **yes** | Your app's origin, e.g. `https://your-flightops.example.com` (comma-separate several). The relay refuses to start without it; `*` is for local experiments only. |
+| `RELAY_TOKEN` | recommended | If set, every `/api/*` request must send `Authorization: Bearer <token>`. `/health` stays open. Enter the same value in the app under **Settings → Relay & delivery → Access token** (stored in that browser only, never exported). |
+| `PORT` | no | Default `8787`. |
+| `DATA_DIR` | no | Where snapshots are written. Default `./data`. |
+| `RATE_LIMIT_PER_MIN` | no | Per-IP limit on `/api/*`. Default `120`. |
 
 ```bash
-ALLOWED_ORIGIN=https://your-flightops-deployment.example.com npm start
+ALLOWED_ORIGIN=https://your-flightops.example.com RELAY_TOKEN=$(openssl rand -hex 24) npm start
 ```
+
+Also built in: input validation on every endpoint, 8 s timeouts on upstream calls (504 on timeout),
+atomic snapshot writes, security headers (helmet), and graceful shutdown on SIGTERM/SIGINT.
+Run the tests with `npm test`.
 
 ## Endpoints
 

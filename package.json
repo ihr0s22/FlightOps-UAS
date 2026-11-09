@@ -2,7 +2,7 @@
   "name": "flightops",
   "private": true,
   "version": "2.3.0",
-  "description": "FlightOps — a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
+  "description": "FlightOps \u00e2\u20ac\u201d a local-first UAS / drone operations console. Missions, flights, fleet, compliance, scheduling, airspace & telemetry, all stored in your browser.",
   "license": "Apache-2.0",
   "author": "Ian Rosario",
   "homepage": "https://ihr0s22.github.io/FlightOps-UAS/",
@@ -39,5 +39,8 @@
     "tailwindcss": "^3.4.19",
     "vite": "^5.4.11",
     "vitest": "^2.1.9"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

@@ -203,3 +203,11 @@ export function importData(onLoad, current) {
   };
   inp.click();
 }
+
+/* ---------- relay token ---------- */
+// Kept OUT of the workspace blob on purpose, so it never ends up in exports, backups or relay snapshots.
+const RELAY_TOKEN_KEY = "flightops:relay-token";
+export function getRelayToken() { try { return localStorage.getItem(RELAY_TOKEN_KEY) || ""; } catch { return ""; } }
+export function setRelayToken(t) { try { t ? localStorage.setItem(RELAY_TOKEN_KEY, t) : localStorage.removeItem(RELAY_TOKEN_KEY); } catch {} }
+// Headers for a request to the relay (adds the bearer token when one is set). Never use for non-relay URLs.
+export function relayHeaders(extra = {}) { const t = getRelayToken(); return t ? { ...extra, Authorization: `Bearer ${t}` } : extra; }
