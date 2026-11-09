@@ -74,10 +74,12 @@ export function seed() {
     settings: {
       theme: "dark",
       org: { name: "Your UAS Ops", part107: "On file", units: "metric", accent: "#1776bb", logo: "" },
-      airspace: { basemap: "street", lat: 38.95, lon: -77.45, zoom: 9, trafficSource: "api", localUrl: "", wxSource: "open-meteo", station: "KIAD", stations: ["KIAD", "KRIC", "KORF", "KDCA"] },
+      airspace: { basemap: "street", lat: 38.95, lon: -77.45, zoom: 9, trafficSource: "api", localUrl: "", wxSource: "open-meteo", station: "KIAD", stations: ["KIAD", "KRIC", "KORF", "KDCA"], trafficDist: 25 },
       ops: { type: "mp4", url: "" },
       telemetry: { source: "sim", wsUrl: "", mqttUrl: "", mqttTopic: "uas/+/telemetry" },
       relay: { url: "" },
+      maps: { streetUrl: "", aerialUrl: "" },   // custom tile templates ({z}/{x}/{y}); "" = built-in OpenStreetMap / Esri
+      geocoder: { url: "" },                    // custom Nominatim-compatible base URL; "" = nominatim.openstreetmap.org
       columns: {},   // per-view list of hidden column ids, e.g. { flights: ["dist"] } — absent/empty = all shown
       rolePermissions: {},   // per-role overrides merged over DEFAULT_ROLE_PERMISSIONS
       currentUserId: "",     // "" = no one signed in -> unrestricted (full access); preserves prior behavior
@@ -150,6 +152,8 @@ export function ensure(s) {
   out.settings.ops = { ...base.settings.ops, ...(src.settings?.ops || {}) };
   out.settings.telemetry = { ...base.settings.telemetry, ...(src.settings?.telemetry || {}) };
   out.settings.relay = { ...base.settings.relay, ...(src.settings?.relay || {}) };
+  out.settings.maps = { ...base.settings.maps, ...(src.settings?.maps || {}) };
+  out.settings.geocoder = { ...base.settings.geocoder, ...(src.settings?.geocoder || {}) };
   out.settings.columns = { ...base.settings.columns, ...(src.settings?.columns || {}) };
   out.settings.rolePermissions = { ...base.settings.rolePermissions, ...(src.settings?.rolePermissions || {}) };
   out.version = SCHEMA_VERSION;

@@ -13,6 +13,10 @@ import {
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { rowsToCsv } from "./src/csv.js";
 import { importRecords, exportCsvText } from "./src/csvImport.js";
+import {
+  validateHttpUrl, validateUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
+  tileUrl, geocoderBase, trafficDist, integrationsSummary, checkReachable, checkApi, checkWebSocket, checkImage,
+} from "./src/integrations.js";
 import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
@@ -834,7 +838,7 @@ const lat2t = (lat, z) => (1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math
 const t2lon = (x, z) => x / 2 ** z * 360 - 180;
 const t2lat = (y, z) => { const n = Math.PI - 2 * Math.PI * y / 2 ** z; return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))); };
 
-function TileMap({ basemap, center, zoom, markers, onPan, polygons = [] }) {
+function TileMap({ basemap, center, zoom, markers, onPan, polygons = [], maps }) {
   const ref = useRef(null);
   const [size, setSize] = useState({ w: 640, h: 360 });
   const drag = useRef(null);
@@ -857,7 +861,7 @@ function TileMap({ basemap, center, zoom, markers, onPan, polygons = [] }) {
   const onUp = () => { drag.current = null; };
   return <div ref={ref} className="relative h-full w-full overflow-hidden select-none" style={{ cursor: "grab", background: "#0b1320" }}
     onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
-    {tiles.map(t => <img key={`${t.tx}-${t.ty}`} alt="" draggable={false} src={(TILE[basemap] || TILE.street).url(z, t.tx, t.ty)}
+    {tiles.map(t => <img key={`${t.tx}-${t.ty}`} alt="" draggable={false} src={tileUrl(maps, basemap, z, t.tx, t.ty)}
       onError={e => { e.currentTarget.style.visibility = "hidden"; }}
       style={{ position: "absolute", left: t.px, top: t.py, width: 256, height: 256, pointerEvents: "none" }} />)}
     {/* Mission flight-planning areas — reuses the same proj() math as markers, so this isn't a second map system. */}
@@ -917,8 +921,8 @@ function Airspace({ data, setSetting, onSelectMission }) {
       const url = as.trafficSource === "local" && as.localUrl
         ? as.localUrl
         : relay
-          ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=25`
-          : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/25`;
+          ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=${trafficDist(as)}`
+          : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/${trafficDist(as)}`;
       const r = await fetch(url, relay && url.startsWith(relay) ? { headers: relayHeaders() } : undefined); const j = await r.json();
       const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: a.track || 0, lat: a.lat, lon: a.lon }));
       setTraffic(ac.length ? ac : sample);
@@ -963,7 +967,7 @@ function Airspace({ data, setSetting, onSelectMission }) {
           </div>
         </div>
         <div className="relative h-80">
-          <TileMap basemap={as.basemap} center={{ lat: as.lat, lon: as.lon }} zoom={as.zoom} markers={[...traffic, ...missionMarkers]} polygons={missionPolygons}
+          <TileMap maps={data.settings.maps} basemap={as.basemap} center={{ lat: as.lat, lon: as.lon }} zoom={as.zoom} markers={[...traffic, ...missionMarkers]} polygons={missionPolygons}
             onPan={(c) => { setSetting(["airspace", "lat"], +c.lat.toFixed(4)); setSetting(["airspace", "lon"], +c.lon.toFixed(4)); }} />
           <div className="absolute right-2 top-2 flex flex-col gap-1">
             <IconBtn onClick={() => setSetting(["airspace", "zoom"], Math.min(15, as.zoom + 1))} label="Zoom in" className="grid !h-7 !w-7 place-items-center rounded bg-black/60 !text-white"><PlusIcon size={14} /></IconBtn>
@@ -1582,6 +1586,178 @@ function RolesAccessPanel({ data, setSetting }) {
     </Panel>
   );
 }
+/* ============================ integrations hub ============================ */
+// A text field that validates before saving: it keeps a local draft, so a half-typed URL never reaches settings.
+function SettingInput({ label, value, onCommit, validate, placeholder, type = "text", hint, inputMode }) {
+  const [draft, setDraft] = useState(value ?? "");
+  const [err, setErr] = useState("");
+  useEffect(() => { setDraft(value ?? ""); setErr(""); }, [value]);
+  const commit = () => {
+    const v = String(draft).trim();
+    const e = validate ? validate(v) : "";
+    setErr(e);
+    if (!e && v !== String(value ?? "")) onCommit(v);
+  };
+  return <Field label={label}>
+    <TextInput type={type} inputMode={inputMode} value={draft} placeholder={placeholder} aria-invalid={!!err}
+      onChange={e => setDraft(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === "Enter") commit(); }} />
+    {err ? <p className="pt-1 text-[11px] text-rose-400" role="alert">{err}</p> : hint ? <p className="pt-1 text-[11px] t4">{hint}</p> : null}
+  </Field>;
+}
+// Runs a connection test and shows the outcome inline. `run` resolves to { ok, message } (and must not throw).
+function TestRow({ run, label = "Test connection", disabled }) {
+  const [res, setRes] = useState(null);
+  const go = async () => {
+    setRes({ busy: true });
+    try { setRes(await run()); } catch { setRes({ ok: false, message: "Test failed unexpectedly." }); }
+  };
+  return <div className="flex flex-wrap items-center gap-2">
+    <Btn onClick={go} disabled={disabled || res?.busy}><Plug size={13} />{res?.busy ? "Testing…" : label}</Btn>
+    {res && !res.busy && <span role="status" className={`text-xs ${res.ok ? "acc" : "text-rose-400"}`}>{res.message}</span>}
+  </div>;
+}
+const INT_STATE = { connected: ["#1776bb", "Connected"], default: ["#64748b", "Built-in"], incomplete: ["#f59e0b", "Needs setup"], off: ["#64748b", "Not connected"] };
+function IntegrationCard({ id, title, icon: Icon, summary, children }) {
+  const [c, label] = INT_STATE[summary?.state || "off"];
+  return <section id={`int-${id}`} aria-label={title} className="rounded-xl border bd sf p-4">
+    <div className="flex items-start justify-between gap-2">
+      <h3 className="flex items-center gap-2 text-sm font-semibold t1"><Icon size={15} className="acc" />{title}</h3>
+      <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide" style={{ background: c + "22", color: c }}>{label}</span>
+    </div>
+    {summary?.detail && <p className="mt-0.5 truncate text-[11px] t4" title={summary.detail}>{summary.detail}</p>}
+    <div className="mt-3 space-y-3">{children}</div>
+  </section>;
+}
+function IntegrationsHub({ data, setSetting }) {
+  const st = data.settings, as = st.airspace, ops = st.ops, tel = st.telemetry, maps = st.maps || {}, geo = st.geocoder || {};
+  const rows = integrationsSummary(st, { hasRelayToken: !!getRelayToken() });
+  const sum = Object.fromEntries(rows.map(r => [r.id, r]));
+  const relay = (st.relay?.url || "").replace(/\/$/, "");
+  const dist = trafficDist(as);
+  const set = (...path) => v => setSetting(path, v);
+  const goTo = id => document.getElementById(`int-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const videoCheck = v => ops.type === "rtsp" ? validateUrl(v, ["rtsp:", "rtsps:", "http:", "https:"]) : validateHttpUrl(v);
+
+  const testAdsb = () => as.trafficSource === "local"
+    ? checkReachable(as.localUrl)
+    : checkApi(relay ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=${dist}` : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/${dist}`,
+        { headers: relay ? relayHeaders() : undefined })
+        .then(r => (!r.ok && !relay ? { ok: false, message: `${r.message} adsb.fi blocks direct browser requests, so set a relay URL above.` } : r));
+  const testWx = () => as.wxSource === "metar"
+    ? checkApi(relay ? `${relay}/api/metar?ids=${as.station}` : `https://aviationweather.gov/api/data/metar?ids=${as.station}&format=json`, { headers: relay ? relayHeaders() : undefined })
+        .then(r => (!r.ok && !relay ? { ok: false, message: `${r.message} METAR usually needs the relay (no CORS headers).` } : r))
+    : checkApi(`https://api.open-meteo.com/v1/forecast?latitude=${as.lat}&longitude=${as.lon}&current=temperature_2m`);
+  const testVideo = () => ops.type === "rtsp"
+    ? Promise.resolve({ ok: false, message: "Browsers can't play or test RTSP. Point this at a gateway that serves HLS or WebRTC." })
+    : checkReachable(ops.url);
+  const testTelemetry = () => tel.source === "ws" ? checkWebSocket(tel.wsUrl)
+    : tel.source === "mqtt" ? checkWebSocket(tel.mqttUrl, { protocols: ["mqtt"] })
+    : Promise.resolve({ ok: true, message: "The simulator needs no connection." });
+  const testTiles = async () => {
+    const [a, b] = await Promise.all([checkImage(tileUrl(maps, "street", 0, 0, 0)), checkImage(tileUrl(maps, "aerial", 0, 0, 0))]);
+    return a.ok && b.ok ? { ok: true, message: "Street and aerial tiles loaded." } : { ok: false, message: `${!a.ok ? "Street" : "Aerial"} tiles failed to load.` };
+  };
+  const testGeo = () => checkApi(`${geocoderBase(geo)}/search?format=json&limit=1&q=Washington`);
+
+  return <div className="lg:col-span-2">
+    <div className="mb-3 flex items-end justify-between gap-3">
+      <div><h2 className="flex items-center gap-2 text-sm font-semibold t1"><Wifi size={15} className="acc" />Integrations hub</h2>
+        <p className="mt-0.5 text-[11px] t4">Every outside connection in one place. Changes apply immediately; use Test to check each one.</p></div>
+    </div>
+    <div className="mb-4 flex flex-wrap gap-1.5" role="list" aria-label="Integration status">
+      {rows.map(r => { const [c, label] = INT_STATE[r.state];
+        return <button key={r.id} role="listitem" type="button" onClick={() => goTo(r.id)} title={`${r.detail} — click to jump`}
+          className="flex items-center gap-1.5 rounded-full border bd px-2.5 py-1 text-[11px] t2 hov">
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: c }} />{r.label}<span className="t4">· {label}</span></button>; })}
+    </div>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <div id="int-relay" className="lg:col-span-2"><RelayPanel data={data} setSetting={setSetting} /></div>
+
+      <IntegrationCard id="adsb" title="ADS-B traffic" icon={Signal} summary={sum.adsb}>
+        <Field label="Source"><Select value={as.trafficSource} onChange={e => setSetting(["airspace", "trafficSource"], e.target.value)}>
+          <option value="api">API: adsb.fi (primary)</option><option value="local">Local receiver (fallback)</option></Select></Field>
+        {as.trafficSource === "local" && <SettingInput label="Local feed URL" value={as.localUrl} validate={v => validateHttpUrl(v, { required: true })}
+          onCommit={set("airspace", "localUrl")} placeholder="http://piaware.local/data/aircraft.json" hint="Your dump1090 / PiAware / tar1090 JSON endpoint." />}
+        <SettingInput label="Search radius (nm)" value={String(dist)} inputMode="numeric" validate={v => validateNumberRange(v, 1, 250, "Radius")}
+          onCommit={v => setSetting(["airspace", "trafficDist"], +v)} hint="How far around the map centre to look for aircraft (1 to 250)." />
+        <TestRow run={testAdsb} />
+      </IntegrationCard>
+
+      <IntegrationCard id="weather" title="Weather" icon={Wind} summary={sum.weather}>
+        <Field label="Source"><Select value={as.wxSource} onChange={e => setSetting(["airspace", "wxSource"], e.target.value)}>
+          <option value="open-meteo">Online: Open-Meteo (map centre)</option><option value="metar">Airport METAR (ICAO)</option></Select></Field>
+        {as.wxSource === "metar" && <>
+          <div>
+            <span className="mb-1 block text-xs font-medium uppercase tracking-wider t3">Stations</span>
+            <div className="flex flex-wrap gap-1">
+              {(as.stations || []).map(sn => (
+                <span key={sn} className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs ${as.station === sn ? "accbg" : "bd t3"}`}>
+                  <button type="button" onClick={() => setSetting(["airspace", "station"], sn)}>{sn}</button>
+                  <IconBtn onClick={() => { const next = (as.stations || []).filter(x => x !== sn); setSetting(["airspace", "stations"], next); if (as.station === sn && next[0]) setSetting(["airspace", "station"], next[0]); }}
+                    label={`Remove ${sn}`} className="!p-0 opacity-50 hover:!bg-transparent hover:opacity-100"><X size={11} /></IconBtn>
+                </span>))}
+              {(as.stations || []).length === 0 && <span className="text-xs t4">No stations yet.</span>}
+            </div>
+            <p className="pt-1 text-[11px] t4">Active: <span className="acc font-mono">{as.station || "none"}</span>. Click a tag to switch.</p>
+          </div>
+          <SettingInput key={(as.stations || []).join()} label="Add a station" value="" validate={v => (v === "" ? "" : validateStation(v))} placeholder="KORF"
+            onCommit={v => { const code = v.toUpperCase(); if (code && !(as.stations || []).includes(code)) { setSetting(["airspace", "stations"], [...(as.stations || []), code]); setSetting(["airspace", "station"], code); } }} />
+        </>}
+        <TestRow run={testWx} />
+      </IntegrationCard>
+
+      <IntegrationCard id="video" title="Live video" icon={Video} summary={sum.video}>
+        <Field label="Video type"><Select value={ops.type} onChange={e => setSetting(["ops", "type"], e.target.value)}>
+          {Object.entries(STREAM_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></Field>
+        <SettingInput label="Stream URL" value={ops.url} validate={videoCheck} onCommit={set("ops", "url")} placeholder="https://…/stream.m3u8" />
+        <div className="flex flex-wrap items-center gap-2">
+          <TestRow run={testVideo} disabled={!ops.url} />
+          {ops.url && <Btn onClick={() => setSetting(["ops", "url"], "")}>Clear</Btn>}
+        </div>
+      </IntegrationCard>
+
+      <IntegrationCard id="telemetry" title="Telemetry stream" icon={Radio} summary={sum.telemetry}>
+        <Field label="Source"><Select value={tel.source} onChange={e => setSetting(["telemetry", "source"], e.target.value)}>
+          {Object.entries(TEL_SOURCES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select></Field>
+        {tel.source === "ws" && <SettingInput label="WebSocket URL" value={tel.wsUrl} validate={v => validateWsUrl(v, { required: true })}
+          onCommit={set("telemetry", "wsUrl")} placeholder="wss://relay.yourdomain.com/telemetry" />}
+        {tel.source === "mqtt" && <>
+          <SettingInput label="Broker (ws / wss)" value={tel.mqttUrl} validate={v => validateWsUrl(v, { required: true })}
+            onCommit={set("telemetry", "mqttUrl")} placeholder="wss://broker:8083/mqtt" />
+          <SettingInput label="Topic" value={tel.mqttTopic} validate={validateMqttTopic} onCommit={set("telemetry", "mqttTopic")} placeholder="uas/+/telemetry" />
+        </>}
+        <TestRow run={testTelemetry} />
+        <p className="text-[11px] t4">Start or stop the live feed from the OPS Center.</p>
+      </IntegrationCard>
+
+      <IntegrationCard id="maps" title="Map tiles & default view" icon={Map} summary={sum.maps}>
+        <SettingInput label="Street tile URL" value={maps.streetUrl || ""} validate={validateTileTemplate} onCommit={set("maps", "streetUrl")}
+          placeholder="Default: OpenStreetMap" hint="Template with {z}, {x}, {y}, e.g. https://tiles.example.com/{z}/{x}/{y}.png. Blank = default." />
+        <SettingInput label="Aerial tile URL" value={maps.aerialUrl || ""} validate={validateTileTemplate} onCommit={set("maps", "aerialUrl")}
+          placeholder="Default: Esri World Imagery" hint="Same format. Note some providers use {z}/{y}/{x}." />
+        <div className="grid grid-cols-3 gap-3">
+          <SettingInput label="Centre lat" value={String(as.lat)} inputMode="decimal" validate={v => validateNumberRange(v, -90, 90, "Latitude")} onCommit={v => setSetting(["airspace", "lat"], +v)} />
+          <SettingInput label="Centre lon" value={String(as.lon)} inputMode="decimal" validate={v => validateNumberRange(v, -180, 180, "Longitude")} onCommit={v => setSetting(["airspace", "lon"], +v)} />
+          <SettingInput label="Zoom" value={String(as.zoom)} inputMode="numeric" validate={v => validateNumberRange(v, 3, 18, "Zoom")} onCommit={v => setSetting(["airspace", "zoom"], Math.round(+v))} />
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <TestRow run={testTiles} label="Test tiles" />
+          {(maps.streetUrl || maps.aerialUrl) && <Btn onClick={() => { setSetting(["maps", "streetUrl"], ""); setSetting(["maps", "aerialUrl"], ""); }}>Reset to defaults</Btn>}
+        </div>
+      </IntegrationCard>
+
+      <IntegrationCard id="geocoder" title="Geocoding (place search)" icon={MapPin} summary={sum.geocoder}>
+        <SettingInput label="Geocoder base URL" value={geo.url || ""} validate={validateHttpUrl} onCommit={set("geocoder", "url")}
+          placeholder="Default: https://nominatim.openstreetmap.org" hint="Any Nominatim-compatible server. Blank = the public OpenStreetMap one, which is rate-limited; self-host for heavy use." />
+        <div className="flex flex-wrap items-center gap-2">
+          <TestRow run={testGeo} />
+          {geo.url && <Btn onClick={() => setSetting(["geocoder", "url"], "")}>Reset to default</Btn>}
+        </div>
+      </IntegrationCard>
+    </div>
+  </div>;
+}
+
 function Settings({ data, setData, setSetting, onReset, can }) {
   const reset = () => { if (confirm("Reset workspace? This clears your records and returns to the start screen.")) onReset(); };
   const org = data.settings.org;
@@ -1592,14 +1768,8 @@ function Settings({ data, setData, setSetting, onReset, can }) {
       const r = new FileReader(); r.onload = () => setSetting(["org", "logo"], r.result); r.readAsDataURL(f); };
     inp.click();
   };
-  const relaySet = !!(data.settings.relay?.url);
-  const intRows = [["ADS-B feed (Airspace)", data.settings.airspace.trafficSource === "local" && data.settings.airspace.localUrl ? "Local set" : "adsb.fi"],
-    ["Weather", data.settings.airspace.wxSource === "open-meteo" ? "Open-Meteo" : `METAR ${data.settings.airspace.station}`],
-    ["Live video (OPS)", data.settings.ops.url ? cap(data.settings.ops.type) : "Not connected"],
-    ["Telemetry stream", TEL_SOURCES[data.settings.telemetry?.source] || "Not connected"],
-    ["Report delivery (relay)", relaySet ? "Relay set" : "Not connected"]];
   return (<>
-    <PageHeader title="Settings" subtitle="Organization, integrations, and data." action={<ThemeToggle theme={data.settings.theme} onChange={v => setSetting(["theme"], v)} />} />
+    <PageHeader title="Settings" subtitle="Organization, integrations hub, and data." action={<ThemeToggle theme={data.settings.theme} onChange={v => setSetting(["theme"], v)} />} />
     <div className="grid gap-4 lg:grid-cols-2">
       {can.manageSettings ? <>
         <Panel title="Organization" icon={SettingsIcon}><div className="space-y-3">
@@ -1629,10 +1799,8 @@ function Settings({ data, setData, setSetting, onReset, can }) {
             <p className="pt-1.5 text-[11px] t4">Shown in the side rail in place of the default plane emblem. PNG/SVG/JPG under 1 MB.</p>
           </Field>
           <Kv k="Theme" v={cap(data.settings.theme)} /></div></Panel>
-        <RelayPanel data={data} setSetting={setSetting} />
         <StoragePanel data={data} setData={setData} />
-        <Panel title="Integrations" icon={Wifi}>{intRows.map(([l, v]) => <div key={l} className="flex items-center justify-between py-1.5"><span className="text-sm t2">{l}</span>
-          <span className="rounded-full border bd px-2 py-0.5 text-[10px] uppercase tracking-wide t3">{v}</span></div>)}</Panel>
+        <IntegrationsHub data={data} setSetting={setSetting} />
         <Panel title="Data" icon={Layers}><Kv k="Aircraft" v={data.aircraft.length} /><Kv k="Equipment" v={(data.equipment || []).length} /><Kv k="Flights logged" v={data.flights.length} /><Kv k="Missions" v={data.missions.length} />
           <div className="pt-2"><Btn variant="danger" onClick={reset}><Trash2 size={14} />Reset to defaults</Btn></div></Panel>
       </> : <Panel title="Organization & integrations" icon={SettingsIcon}>
@@ -2228,7 +2396,7 @@ function ModalRouter({ modal, data, upsert, saveFlight, saveMaintenance, closeMo
     if (!q) { setGeo({ loading: false, msg: "Add a location first." }); return; }
     setGeo({ loading: true, msg: "" });
     try {
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`);
+      const r = await fetch(`${geocoderBase(data.settings.geocoder)}/search?format=json&limit=1&q=${encodeURIComponent(q)}`);
       const j = await r.json();
       if (!j.length) { setGeo({ loading: false, msg: "No match found for that location." }); return; }
       set("lat", (+j[0].lat).toFixed(4)); set("lon", (+j[0].lon).toFixed(4));
