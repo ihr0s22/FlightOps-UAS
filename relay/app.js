@@ -100,6 +100,22 @@ export async function createApp({
     catch { res.status(500).json({ error: "couldn't write schedules" }); }
   });
 
+  // "Run on relay" for a scheduled report: validates and QUEUES the request on disk (capped). Delivery itself
+  // (e-mail etc.) is not implemented here; this endpoint only records what was asked for.
+  const MAX_QUEUE = 200;
+  let queueLock = Promise.resolve();
+  app.post("/api/reports/run", (req, res) => {
+    const b = req.body;
+    if (b === null || typeof b !== "object" || Array.isArray(b) || typeof b.name !== "string" || !b.name.trim())
+      return res.status(400).json({ error: "report must be an object with a name" });
+    const file = path.join(dataDir, "report-queue.json");
+    queueLock = queueLock.then(async () => {   // serialise read-modify-write so concurrent requests can't lose entries
+      const cur = JSON.parse(await readFile(file, "utf8").catch(() => "[]"));
+      cur.push({ queuedAt: new Date().toISOString(), report: b });
+      await writeJsonAtomic(file, cur.slice(-MAX_QUEUE));
+    }).then(() => res.json({ ok: true, queued: true }), () => res.status(500).json({ error: "couldn't queue report" }));
+  });
+
   app.get("/api/snapshot", async (_req, res) => {
     try {
       const [snapshot, meta] = await Promise.all([

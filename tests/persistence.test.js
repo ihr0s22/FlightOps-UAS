@@ -83,6 +83,29 @@ describe("saveState + backups", () => {
   });
 });
 
+describe("first save of a session", () => {
+  it("backs up the copy that was on disk when the app loaded", async () => {
+    localStorage.setItem(P.STORE_KEY, JSON.stringify({ version: 6, orig: true }));
+    await P.loadState();
+    await P.saveState({ version: 6, orig: false });
+    const b = P.listBackups();
+    expect(b).toHaveLength(1);
+    expect(P.readBackup(b[0].key).orig).toBe(true);
+  });
+});
+
+describe("backupUnreadableState", () => {
+  it("keeps the raw unreadable text before it is replaced", async () => {
+    localStorage.setItem(P.STORE_KEY, "{corrupt");
+    await P.backupUnreadableState();
+    expect(P.getUnreadableCopy()).toBe("{corrupt");
+  });
+  it("ignores empty state", async () => {
+    await P.backupUnreadableState();
+    expect(P.getUnreadableCopy()).toBe("");
+  });
+});
+
 describe("clearState", () => {
   it("keeps a recoverable backup of what it wipes", async () => {
     localStorage.setItem(P.STORE_KEY, JSON.stringify({ n: 7 }));

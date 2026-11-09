@@ -11,16 +11,17 @@ import {
   FileText, Paperclip, ExternalLink, Sparkles, LayoutGrid, List, SlidersHorizontal, Camera
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { rowsToCsv, parseCsvText, unguardCell } from "./src/csv.js";
+import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
   hasArtifactStore, fsSupported, loadState, saveState, clearState, setSaveStatus, subscribeSaveStatus,
   getDriveHandle, connectDrive, disconnectDrive, exportData, importData,
-  getSaveStatus, watchOtherTabs, getRelayToken, setRelayToken, relayHeaders, requestPersistence, listBackups, readBackup,
+  getSaveStatus, backupUnreadableState, getUnreadableCopy, watchOtherTabs, getRelayToken, setRelayToken, relayHeaders, requestPersistence, listBackups, readBackup,
 } from "./src/persistence.js";
 
 
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
-const daysUntil = (dateStr, now = new Date()) => (dateStr ? (new Date(dateStr) - now) / 86400000 : null);
 // Pick readable ink (near-black vs white) for text/icons sitting on a given hex accent.
 function inkFor(hex) {
   try {
@@ -30,9 +31,6 @@ function inkFor(hex) {
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6 ? "#0f172a" : "#ffffff";
   } catch { return "#ffffff"; }
 }
-const addDays = (dateStr, days) => { const d = new Date(dateStr); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const round2 = (v) => Math.round(v * 100) / 100;
 /* ============================ units ============================ */
 // Flight altitude/distance are stored canonically in metric (meters / km) regardless of the user's
 // Settings → Default units preference; these only convert at the display/input edges. Aviation-standard
@@ -47,7 +45,6 @@ const dispDist = (km, data) => isImperial(data) ? { value: (km || 0) / KM_PER_MI
 const toAlt = (value, data) => isImperial(data) ? (+value || 0) * M_PER_FT : (+value || 0);
 const toDist = (value, data) => isImperial(data) ? (+value || 0) * KM_PER_MI : (+value || 0);
 // Health fade per charge cycle, scaled so a pack loses ~40 points across its rated cycle life.
-const healthPerCycle = (b) => 40 / (b.cycleLimit || 500);
 
 /* Computed maintenance "due" status for an aircraft, across hours / cycles / calendar intervals.
    Returns the most-urgent item per metric plus an overall tone, or null when no intervals are set. */
@@ -457,29 +454,7 @@ function App() {
   // Saving a flight rolls its usage up into the fleet: aircraft hours (+dur/60) & cycles (+1),
   // and each used battery's cycles (+1). On edit we apply the delta vs. the prior version so
   // re-saving (or reassigning aircraft/batteries) never double-counts.
-  const saveFlight = useCallback((flight) => setData(d => {
-    const id = flight.id || uid("FLT");
-    const saved = { ...flight, id };
-    const prev = flight.id ? d.flights.find(f => f.id === id) : null;
-    const flights = prev ? d.flights.map(f => (f.id === id ? saved : f)) : [saved, ...d.flights];
-
-    const hoursD = {}, cyclesD = {}, batD = {};
-    const bump = (ac, dur, bats, sign) => {
-      if (ac) { hoursD[ac] = (hoursD[ac] || 0) + sign * (dur || 0) / 60; cyclesD[ac] = (cyclesD[ac] || 0) + sign; }
-      (bats || []).forEach(b => { batD[b] = (batD[b] || 0) + sign; });
-    };
-    if (prev) bump(prev.aircraft, prev.dur, prev.batteries, -1);
-    bump(saved.aircraft, saved.dur, saved.batteries, +1);
-
-    const aircraft = d.aircraft.map(a => (hoursD[a.id] == null && cyclesD[a.id] == null) ? a
-      : { ...a, hours: +Math.max(0, (a.hours || 0) + (hoursD[a.id] || 0)).toFixed(1), cycles: Math.max(0, (a.cycles || 0) + (cyclesD[a.id] || 0)) });
-    const batteries = d.batteries.map(b => {
-      const dc = batD[b.id];
-      if (dc == null) return b;
-      return { ...b, cycles: Math.max(0, (b.cycles || 0) + dc), health: clamp(round2((b.health ?? 100) - dc * healthPerCycle(b)), 0, 100) };
-    });
-    return { ...d, flights, aircraft, batteries };
-  }), []);
+  const saveFlight = useCallback((flight) => setData(d => applyFlight(d, flight, uid("FLT"))), []);
 
   // Logging maintenance resets the aircraft's service baseline so "next due" recomputes from now.
   const saveMaintenance = useCallback((rec) => setData(d => {
@@ -504,7 +479,7 @@ function App() {
   }, []);
 
   if (!data) {
-    if (loadError) return <LoadError onRetry={bootstrap} onFresh={startEmpty} />;
+    if (loadError) return <LoadError onRetry={bootstrap} onFresh={async () => { await backupUnreadableState(); startEmpty(); }} />;
     return firstRun
       ? <FirstRun onEmpty={startEmpty} onDemo={loadDemo} />
       : <div className="flex h-screen items-center justify-center text-slate-500" style={{ background: "#070d15" }}>Loading flight ops…</div>;
@@ -1273,10 +1248,10 @@ function buildReport(entity, data, range, nameOf) {
   if (entity === "aircraft") {
     const rows = data.aircraft.map(a => { const fl = data.flights.filter(f => f.aircraft === a.id && inRange(f.date || "")); const min = fl.reduce((s, f) => s + (f.dur || 0), 0);
       return { a, flights: fl.length, min }; });
-    return { entity, cols: ["Tail", "Model", "Total hrs", "Cycles", "Flights (range)", "Min (range)", "Status"], rows: rows.map(({ a, flights, min }) => [a.tail, a.model, a.hours, a.cycles, flights, min, <Badge value={a.status} />]),
-      raw: rows.map(({ a, flights, min }) => [a.tail, a.model, a.hours, a.cycles, flights, min, a.status]),
+    return { entity, cols: ["Tail", "Model", "Total hrs", "Cycles", "Flights (range)", "Min (range)", "Status"], rows: rows.map(({ a, flights, min }) => [a.tail, a.model, +(+a.hours || 0).toFixed(2), a.cycles, flights, min, <Badge value={a.status} />]),
+      raw: rows.map(({ a, flights, min }) => [a.tail, a.model, +(+a.hours || 0).toFixed(2), a.cycles, flights, min, a.status]),
       kpis: [{ label: "Aircraft", value: data.aircraft.length, icon: Plane, tone: "teal" }, { label: "Available", value: data.aircraft.filter(a => a.status === "Available").length, icon: Activity, tone: "teal" }, { label: "Grounded", value: data.aircraft.filter(a => a.status === "Grounded").length, icon: AlertTriangle, tone: "rose" }, { label: "Fleet hours", value: data.aircraft.reduce((s, a) => s + (a.hours || 0), 0).toFixed(0), icon: Clock, tone: "slate" }],
-      chart: { title: "Total hours by aircraft", data: data.aircraft.map(a => ({ name: a.tail, value: a.hours })) } };
+      chart: { title: "Total hours by aircraft", data: data.aircraft.map(a => ({ name: a.tail, value: +(+a.hours || 0).toFixed(2) })) } };
   }
   if (entity === "batteries") {
     const use = {}; data.flights.filter(f => inRange(f.date || "")).forEach(f => (f.batteries || []).forEach(b => { use[b] = (use[b] || 0) + 1; }));
@@ -1335,8 +1310,8 @@ function Scheduled({ data, nameOf, update }) {
   const relay = (data.settings.relay?.url || "").replace(/\/$/, "");
   const sendRelay = async s => {
     try { const res = await fetch(`${relay}/api/reports/run`, { method: "POST", headers: relayHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(s) });
-      update("scheduledReports", l => l.map(x => x.id === s.id ? { ...x, lastRun: new Date().toLocaleString() + " · relay" } : x));
-      alert(res.ok ? "Queued on relay for delivery." : "Relay returned an error.");
+      if (res.ok) update("scheduledReports", l => l.map(x => x.id === s.id ? { ...x, lastRun: new Date().toLocaleString() + " · relay" } : x));
+      alert(res.ok ? "Queued on relay for delivery." : res.status === 401 ? "The relay rejected the access token. Check Settings → Relay & delivery." : "Relay returned an error.");
     } catch { alert("Couldn't reach the relay — set its URL in Settings."); }
   };
   return (<>
@@ -1357,32 +1332,12 @@ function Scheduled({ data, nameOf, update }) {
   </>);
 }
 
-// Shared CSV row serialization — same quoting rule (wrap every field, double up embedded quotes) used by
-// both the Reporting CSV export and the full-fidelity Aircraft/Users CSV export below.
-const rowsToCsv = (cols, rows) => [cols, ...rows].map(row => row.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
 function downloadCsv(filename, csv) {
   try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = filename; a.click(); }
   catch { alert("Couldn't generate the CSV export. Please try again."); }
 }
 function exportCsv(report) { downloadCsv(`${report.entity}-report.csv`, rowsToCsv(report.cols, report.raw)); }
 
-// Minimal RFC4180-ish CSV parser: handles quoted fields, embedded commas/quotes (""), and CRLF/LF rows.
-// No library needed for a format this small.
-function parseCsvText(text) {
-  const rows = []; let row = [], field = "", inQuotes = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (inQuotes) {
-      if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false; }
-      else field += c;
-    } else if (c === '"') inQuotes = true;
-    else if (c === ",") { row.push(field); field = ""; }
-    else if (c === "\n" || c === "\r") { if (c === "\r" && text[i + 1] === "\n") i++; row.push(field); rows.push(row); row = []; field = ""; }
-    else field += c;
-  }
-  if (field.length || row.length) { row.push(field); rows.push(row); }
-  return rows.filter(r => r.some(c => c.trim() !== ""));
-}
 // Full-fidelity export field specs for bulk CSV — mirrors the editable fields in the Aircraft/User forms,
 // so a round trip (export → edit → import) doesn't lose data.
 const AIRCRAFT_CSV_FIELDS = [
@@ -1431,11 +1386,14 @@ function importEntityCsv(type, fields, text, upsert, prefix) {
   const defaults = init({ type });
   const errors = []; let added = 0;
   rows.slice(1).forEach((cells, i) => {
-    const rec = { ...defaults };
+    const rec = { ...defaults }; const numErrs = [];
     fields.forEach(f => { const ci = colFor(f.label); if (ci === -1) return;
-      const raw = (cells[ci] ?? "").trim();
-      rec[f.key] = NUMERIC_FIELDS.has(f.key) ? (raw === "" ? 0 : +raw) : raw; });
-    const errs = validate(type, rec);
+      const raw = unguardCell((cells[ci] ?? "").trim());
+      if (NUMERIC_FIELDS.has(f.key)) {
+        const n = raw === "" ? 0 : Number(raw);
+        if (Number.isFinite(n)) rec[f.key] = n; else { rec[f.key] = 0; numErrs.push(`${f.label} must be a number (got "${raw}").`); }
+      } else rec[f.key] = raw; });
+    const errs = [...numErrs, ...validate(type, rec)];
     if (errs.length) { errors.push({ row: i + 2, msgs: errs }); return; }
     upsert(CONFIG[type].coll, { ...rec, id: uid(prefix) });
     added++;
@@ -1494,6 +1452,7 @@ function StoragePanel({ data, setData }) {
   const [drive, setDrive] = useState(null);
   const [msg, setMsg] = useState("");
   const [backups] = useState(() => listBackups());
+  const [unreadable] = useState(() => getUnreadableCopy());
   useEffect(() => { getDriveHandle().then(h => setDrive(h ? h.name : null)).catch(() => {}); }, []);
   const connect = async () => {
     setMsg("");
@@ -1512,6 +1471,7 @@ function StoragePanel({ data, setData }) {
         <Btn onClick={() => importData(d => { try { setData(ensure(d)); } catch { alert("That file couldn't be migrated to this version."); } }, data)}><Upload size={13} />Import file</Btn>
       </div>
       {msg && <p className="pt-2 text-[11px] acc">{msg}</p>}
+      {unreadable && <div className="pt-3"><Btn onClick={() => { try { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([unreadable], { type: "text/plain" })); a.download = "flightdeck-unreadable.txt"; a.click(); } catch {} }}><Download size={13} />Download unreadable data from the last failed load</Btn></div>}
       {backups.length > 0 && <div className="pt-3"><div className="text-[11px] font-medium t3">Automatic backups (browser only, newest first)</div>
         <div className="mt-1 flex flex-wrap gap-2">{backups.map(b => <Btn key={b.key} onClick={() => {
           const d = readBackup(b.key);
@@ -1904,7 +1864,7 @@ function LoadError({ onRetry, onFresh }) {
     <div className="w-full max-w-md rounded-2xl border bd sf p-7 text-center shadow-2xl">
       <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl" style={{ background: "#f43f5e22" }}><AlertTriangle size={22} className="text-rose-400" /></div>
       <h1 className="text-lg font-bold t1">Couldn't load your data</h1>
-      <p className="mt-1 text-sm t3">The saved workspace couldn't be read — it may be corrupted or from an incompatible version. Your stored file was left untouched.</p>
+      <p className="mt-1 text-sm t3">The saved workspace couldn't be read — it may be corrupted or from an incompatible version. Try Retry first. "Start fresh" keeps a downloadable copy of the unreadable data in Settings → Storage.</p>
       <div className="mt-6 flex justify-center gap-2">
         <Btn variant="primary" onClick={onRetry}><RefreshCw size={14} />Retry</Btn>
         <Btn onClick={onFresh}>Start fresh</Btn>
@@ -2023,7 +1983,7 @@ function Aircraft({ data, setModal, remove, highlight, setSetting, upsert, can =
     { id: "tail", label: "Tail / ID", cell: a => <Cell mono>{a.tail}</Cell> },
     { id: "model", label: "Model", cell: a => <Cell>{a.model}</Cell> },
     { id: "serial", label: "Serial", cell: a => <Cell mono>{a.serial}</Cell> },
-    { id: "hours", label: "Hours", cell: a => <Cell mono>{a.hours}</Cell> },
+    { id: "hours", label: "Hours", cell: a => <Cell mono>{(+a.hours || 0).toFixed(1)}</Cell> },
     { id: "cycles", label: "Cycles", cell: a => <Cell mono>{a.cycles}</Cell> },
     { id: "faareg", label: "FAA Reg", cell: a => <Cell mono>{a.faaReg || "—"}</Cell> },
     { id: "regexp", label: "Reg exp", cell: a => { const regD = daysUntil(a.regExp, now); const regCls = regD == null ? "t3" : regD < 0 ? "text-rose-400" : regD < 60 ? "text-amber-400" : "t3";

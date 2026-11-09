@@ -92,3 +92,13 @@ test("CORS only allows the configured origin", async () => {
   const ok = await fetch(`${base}/health`, { headers: { Origin: "http://app.test" } });
   assert.equal(ok.headers.get("access-control-allow-origin"), "http://app.test");
 });
+
+test("report run validates, queues, and keeps every entry under concurrent requests", async () => {
+  assert.equal((await post(`${base}/api/reports/run`, [])).status, 400);
+  assert.equal((await post(`${base}/api/reports/run`, { nope: 1 })).status, 400);
+  const rs = await Promise.all([1, 2, 3, 4, 5].map(i => post(`${base}/api/reports/run`, { name: `r${i}` })));
+  assert.ok(rs.every(r => r.status === 200));
+  const { readFile } = await import("node:fs/promises");
+  const q = JSON.parse(await readFile(path.join(dir, "report-queue.json"), "utf8"));
+  assert.equal(q.length, 5);
+});

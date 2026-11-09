@@ -1,7 +1,12 @@
 // Workspace schema: seed data, stepwise migrations, and normalisation of saved blobs.
 // Kept free of React/DOM so it can be unit-tested.
 export const SCHEMA_VERSION = 6;
-export const uid = (p) => `${p}-${Math.random().toString(36).slice(2, 7)}`;
+// 40 random bits per id: 5 base36 chars (the old scheme) collided after only a few thousand records.
+export const uid = (p) => {
+  const c = globalThis.crypto;
+  const r = c?.randomUUID ? c.randomUUID().replace(/-/g, "").slice(0, 10) : Math.random().toString(36).slice(2, 12).padEnd(10, "0");
+  return `${p}-${r}`;
+};
 
 /* ============================ seed ============================ */
 export function seed() {

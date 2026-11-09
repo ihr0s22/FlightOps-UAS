@@ -79,7 +79,9 @@ export function validateWorkspace(d) {
 async function readLocal() {
   if (hasArtifactStore) { const r = await window.storage.get(STORE_KEY); return r ? JSON.parse(r.value) : null; }
   const s = localStorage.getItem(STORE_KEY);
-  return s ? JSON.parse(s) : null;
+  const parsed = s ? JSON.parse(s) : null;
+  if (parsed) lastWrittenJson = s;   // so the first save of a session backs up the copy that was on disk at load
+  return parsed;
 }
 
 // Rolling backups live in localStorage (self-hosted/browser mode). Best-effort: a failed backup never blocks a save.
@@ -211,3 +213,14 @@ export function getRelayToken() { try { return localStorage.getItem(RELAY_TOKEN_
 export function setRelayToken(t) { try { t ? localStorage.setItem(RELAY_TOKEN_KEY, t) : localStorage.removeItem(RELAY_TOKEN_KEY); } catch {} }
 // Headers for a request to the relay (adds the bearer token when one is set). Never use for non-relay URLs.
 export function relayHeaders(extra = {}) { const t = getRelayToken(); return t ? { ...extra, Authorization: `Bearer ${t}` } : extra; }
+
+/* ---------- unreadable-data safety copy ---------- */
+const UNREADABLE_KEY = "droneops:unreadable";
+// Called before "Start fresh" replaces data that failed to load: keep the raw text so it can be recovered by hand.
+export async function backupUnreadableState() {
+  let raw = null;
+  try { const h = await getDriveHandle(); if (h) { const fh = await h.getFileHandle("flightdeck.json"); raw = await (await fh.getFile()).text(); } } catch {}
+  if (!raw) { try { raw = hasArtifactStore ? (await window.storage.get(STORE_KEY))?.value : localStorage.getItem(STORE_KEY); } catch {} }
+  if (raw && raw !== "null") { try { localStorage.setItem(UNREADABLE_KEY, raw); } catch {} }
+}
+export function getUnreadableCopy() { try { return localStorage.getItem(UNREADABLE_KEY) || ""; } catch { return ""; } }
