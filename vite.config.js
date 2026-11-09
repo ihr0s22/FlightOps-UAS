@@ -8,6 +8,8 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  // Vitest covers the app only; the relay has its own node:test suite (run via `npm test` in relay/).
+  test: { include: ["tests/**/*.test.js"] },
   server: {
     host: true,   // expose on the LAN
     port: 5173,
