@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import "@fontsource-variable/atkinson-hyperlegible-next";
 import "./index.css";
 import App from "../FlightOps-UAS.jsx";
 

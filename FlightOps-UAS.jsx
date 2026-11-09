@@ -535,7 +535,7 @@ function App() {
   };
 
   return (
-    <div data-theme={theme} className="flex min-h-screen w-full" style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", "--accent": accent, "--accent-ink": accentInk }}>
+    <div data-theme={theme} className="flex min-h-screen w-full" style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Atkinson Hyperlegible Next Variable','Atkinson Hyperlegible',system-ui,-apple-system,'Segoe UI',sans-serif", "--accent": accent, "--accent-ink": accentInk }}>
       <style>{THEME_CSS}</style>
 
       <nav aria-label="Primary" className="flex w-16 shrink-0 flex-col items-center gap-1 border-r bd rail py-3">
@@ -1879,7 +1879,7 @@ function GlobalSearch({ data, nameOf, onPick }) {
 }
 function FirstRun({ onEmpty, onDemo }) {
   return <div data-theme="dark" className="flex min-h-screen w-full items-center justify-center p-6"
-    style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Inter',system-ui,-apple-system,sans-serif" }}>
+    style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Atkinson Hyperlegible Next Variable','Atkinson Hyperlegible',system-ui,-apple-system,'Segoe UI',sans-serif" }}>
     <style>{THEME_CSS}</style>
     <div className="w-full max-w-md rounded-2xl border bd sf p-7 text-center shadow-2xl">
       <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl accbg"><Plane size={22} /></div>
@@ -1899,7 +1899,7 @@ function FirstRun({ onEmpty, onDemo }) {
 // Recoverable screen when a saved workspace can't be read (corrupt/incompatible). Stored file is left untouched.
 function LoadError({ onRetry, onFresh }) {
   return <div data-theme="dark" className="flex min-h-screen w-full items-center justify-center p-6"
-    style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Inter',system-ui,-apple-system,sans-serif" }}>
+    style={{ background: "var(--bg)", color: "var(--t2)", fontFamily: "'Atkinson Hyperlegible Next Variable','Atkinson Hyperlegible',system-ui,-apple-system,'Segoe UI',sans-serif" }}>
     <style>{THEME_CSS}</style>
     <div className="w-full max-w-md rounded-2xl border bd sf p-7 text-center shadow-2xl">
       <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-xl" style={{ background: "#f43f5e22" }}><AlertTriangle size={22} className="text-rose-400" /></div>
