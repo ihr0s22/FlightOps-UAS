@@ -11,7 +11,8 @@ import {
   FileText, Paperclip, ExternalLink, Sparkles, LayoutGrid, List, SlidersHorizontal, Camera
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
-import { rowsToCsv, parseCsvText, unguardCell } from "./src/csv.js";
+import { rowsToCsv } from "./src/csv.js";
+import { importRecords, exportCsvText } from "./src/csvImport.js";
 import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
@@ -565,10 +566,10 @@ function App() {
           {tab === "settings" && <Settings {...{ data, setData, setSetting, onReset: resetWorkspace, can }} />}
           {tab === "manage" && <>
             <div className="mb-5"><GlobalSearch data={data} nameOf={nameOf} onPick={goSearch} /></div>
-            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight, setSetting }} can={can.manageOperations} />}
-            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight, setSetting }} can={can.manageOperations} />}
+            {view === "missions" && <Missions {...{ data, setModal, remove, nameOf, highlight, setSetting, upsert }} can={can.manageOperations} />}
+            {view === "flights" && <Flights {...{ data, setModal, remove, nameOf, highlight, setSetting, upsert }} can={can.manageOperations} />}
             {view === "laanc" && <Laanc {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
-            {view === "waivers" && <Waivers {...{ data, setModal, remove, setSetting }} can={can.manageCompliance} />}
+            {view === "waivers" && <Waivers {...{ data, setModal, remove, setSetting, upsert }} can={can.manageCompliance} />}
             {view === "documents" && <Documents {...{ data, setModal, remove, setSetting }} can={can.manageCompliance} />}
             {(view === "checklists" || view === "proc-checklists") && <Checklists {...{ data, setModal, remove, update, setSetting }} can={can.manageOperations} />}
             {(view === "risk" || view === "proc-risk") && <RiskList {...{ data, setModal, remove, setSetting }} can={can.manageOperations} />}
@@ -1338,87 +1339,104 @@ function downloadCsv(filename, csv) {
 }
 function exportCsv(report) { downloadCsv(`${report.entity}-report.csv`, rowsToCsv(report.cols, report.raw)); }
 
-// Full-fidelity export field specs for bulk CSV — mirrors the editable fields in the Aircraft/User forms,
-// so a round trip (export → edit → import) doesn't lose data.
+// Field specs for CSV import/export. Headers match loosely (case/punctuation-insensitive, plus `alts`);
+// `ref` columns are written and read as names / tail numbers, not internal ids; `date` columns accept
+// YYYY-MM-DD or MM/DD/YYYY. See src/csvImport.js.
+const AC_REF = { coll: "aircraft", by: ["tail"] };
 const AIRCRAFT_CSV_FIELDS = [
-  { key: "tail", label: "Tail" }, { key: "model", label: "Model" }, { key: "serial", label: "Serial" }, { key: "type", label: "Type" },
-  { key: "status", label: "Status" }, { key: "hours", label: "Hours" }, { key: "cycles", label: "Cycles" }, { key: "lastMx", label: "Last Mx" },
-  { key: "faaReg", label: "FAA Reg" }, { key: "regExp", label: "Reg Expiry" }, { key: "remoteId", label: "Remote ID" },
-  { key: "mxIntervalHours", label: "Mx Interval Hours" }, { key: "mxIntervalCycles", label: "Mx Interval Cycles" }, { key: "mxIntervalDays", label: "Mx Interval Days" },
-  { key: "mxAtHours", label: "Mx At Hours" }, { key: "mxAtCycles", label: "Mx At Cycles" },
+  { key: "tail", label: "Tail", alts: ["Tail Number", "Registration", "N Number"] }, { key: "model", label: "Model" }, { key: "serial", label: "Serial", alts: ["Serial Number"] },
+  { key: "type", label: "Type" }, { key: "status", label: "Status" }, { key: "hours", label: "Hours", num: true }, { key: "cycles", label: "Cycles", num: true },
+  { key: "lastMx", label: "Last Mx", date: true, alts: ["Last Maintenance"] },
+  { key: "faaReg", label: "FAA Reg" }, { key: "regExp", label: "Reg Expiry", date: true, alts: ["Registration Expiry"] }, { key: "remoteId", label: "Remote ID" },
+  { key: "mxIntervalHours", label: "Mx Interval Hours", num: true }, { key: "mxIntervalCycles", label: "Mx Interval Cycles", num: true }, { key: "mxIntervalDays", label: "Mx Interval Days", num: true },
+  { key: "mxAtHours", label: "Mx At Hours", num: true }, { key: "mxAtCycles", label: "Mx At Cycles", num: true },
 ];
 const USER_CSV_FIELDS = [
-  { key: "name", label: "Name" }, { key: "role", label: "Role" }, { key: "cert", label: "Certification" }, { key: "certExp", label: "Cert Expiry" }, { key: "status", label: "Status" },
+  { key: "name", label: "Name" }, { key: "role", label: "Role" }, { key: "cert", label: "Certification", alts: ["Cert"] },
+  { key: "certExp", label: "Cert Expiry", date: true, alts: ["Certification Expiry", "Expiry"] }, { key: "status", label: "Status" },
 ];
 const BATTERY_CSV_FIELDS = [
-  { key: "label", label: "Label" }, { key: "chem", label: "Chemistry" }, { key: "capacity", label: "Capacity (Wh)" },
-  { key: "cycles", label: "Cycles" }, { key: "health", label: "Health" }, { key: "status", label: "Status" }, { key: "cycleLimit", label: "Cycle Limit" },
+  { key: "label", label: "Label", alts: ["Name", "Battery"] }, { key: "chem", label: "Chemistry", alts: ["Chem"] }, { key: "capacity", label: "Capacity (Wh)", num: true, alts: ["Capacity"] },
+  { key: "cycles", label: "Cycles", num: true }, { key: "health", label: "Health", num: true }, { key: "status", label: "Status" }, { key: "cycleLimit", label: "Cycle Limit", num: true },
 ];
 const EQUIPMENT_CSV_FIELDS = [
   { key: "name", label: "Name" }, { key: "category", label: "Category" }, { key: "serial", label: "Serial" }, { key: "status", label: "Status" },
-  { key: "aircraftId", label: "Aircraft ID" }, { key: "missionId", label: "Mission ID" }, { key: "notes", label: "Notes" },
+  { key: "aircraftId", label: "Aircraft", alts: ["Aircraft ID", "Tail"], ref: AC_REF },
+  { key: "missionId", label: "Mission", alts: ["Mission ID"], ref: { coll: "missions", by: ["name"] } }, { key: "notes", label: "Notes" },
 ];
 const MAINTENANCE_CSV_FIELDS = [
-  { key: "date", label: "Date" }, { key: "aircraft", label: "Aircraft ID" }, { key: "type", label: "Type" }, { key: "desc", label: "Description" }, { key: "tech", label: "Technician" },
+  { key: "date", label: "Date", date: true }, { key: "aircraft", label: "Aircraft", alts: ["Aircraft ID", "Tail", "Tail Number"], ref: AC_REF },
+  { key: "type", label: "Type" }, { key: "desc", label: "Description", alts: ["Work Performed", "Notes"] }, { key: "tech", label: "Technician", alts: ["Tech", "Mechanic"] },
 ];
 const INCIDENT_CSV_FIELDS = [
-  { key: "date", label: "Date" }, { key: "aircraft", label: "Aircraft ID" }, { key: "severity", label: "Severity" }, { key: "desc", label: "Description" }, { key: "resolution", label: "Resolution" },
+  { key: "date", label: "Date", date: true }, { key: "aircraft", label: "Aircraft", alts: ["Aircraft ID", "Tail", "Tail Number"], ref: AC_REF },
+  { key: "severity", label: "Severity" }, { key: "desc", label: "Description" }, { key: "resolution", label: "Resolution" },
 ];
-const NUMERIC_FIELDS = new Set(["hours", "cycles", "mxIntervalHours", "mxIntervalCycles", "mxIntervalDays", "mxAtHours", "mxAtCycles", "capacity", "health", "cycleLimit"]);
-// One filename per entity type — covers every CSV-enabled view, including this session's four additions.
-const CSV_FILENAMES = { aircraft: "aircraft.csv", user: "users.csv", battery: "batteries.csv", equipment: "equipment.csv", maintenance: "maintenance.csv", incident: "incidents.csv" };
-function exportEntityCsv(type, fields, list) {
-  downloadCsv(CSV_FILENAMES[type] || `${type}.csv`, rowsToCsv(fields.map(f => f.label), list.map(item => fields.map(f => item[f.key]))));
+const FLIGHT_CSV_FIELDS = [
+  { key: "date", label: "Date", date: true },
+  { key: "missionId", label: "Mission", alts: ["Mission ID"], ref: { coll: "missions", by: ["name"] } },
+  { key: "operator", label: "Remote PIC", alts: ["RPIC", "Operator", "Pilot", "PIC"], ref: { coll: "users", by: ["name"] } },
+  { key: "aircraft", label: "Aircraft", alts: ["Aircraft ID", "Tail", "Tail Number"], ref: AC_REF },
+  { key: "batteries", label: "Batteries", alts: ["Battery"], ref: { coll: "batteries", by: ["label"], multi: true } },
+  { key: "dur", label: "Duration (min)", num: true, alts: ["Duration", "Minutes", "Dur"] },
+  { key: "maxAlt", label: "Max Alt (m)", num: true, alts: ["Max Alt", "Max Altitude"] }, { key: "dist", label: "Distance (km)", num: true, alts: ["Distance", "Dist"] },
+  { key: "location", label: "Location" }, { key: "status", label: "Status" }, { key: "notes", label: "Notes" },
+];
+const MISSION_CSV_FIELDS = [
+  { key: "name", label: "Name", alts: ["Mission", "Mission Name"] }, { key: "date", label: "Date", date: true }, { key: "status", label: "Status" },
+  { key: "location", label: "Location" }, { key: "objective", label: "Objective" },
+  { key: "operators", label: "Operators", alts: ["Crew", "Pilots"], ref: { coll: "users", by: ["name"], multi: true } },
+  { key: "aircraft", label: "Aircraft", alts: ["Tail", "Tail Numbers"], ref: { ...AC_REF, multi: true } },
+  { key: "laanc", label: "LAANC" }, { key: "risk", label: "Risk" }, { key: "lat", label: "Latitude", alts: ["Lat"] }, { key: "lon", label: "Longitude", alts: ["Lon", "Lng"] },
+];
+const WAIVER_CSV_FIELDS = [
+  { key: "name", label: "Name" }, { key: "type", label: "Type" }, { key: "scope", label: "Scope" }, { key: "number", label: "Number", alts: ["Waiver Number", "COA Number"] },
+  { key: "issued", label: "Issued", date: true, alts: ["Issue Date"] }, { key: "expiry", label: "Expiry", date: true, alts: ["Expiration", "Expires"] }, { key: "status", label: "Status" },
+];
+// One filename per entity type.
+const CSV_FILENAMES = { aircraft: "aircraft.csv", user: "users.csv", battery: "batteries.csv", equipment: "equipment.csv", maintenance: "maintenance.csv", incident: "incidents.csv",
+  flight: "flights.csv", mission: "missions.csv", waiver: "waivers.csv" };
+// Shown after an import when it matters what the import did NOT do.
+const CSV_IMPORT_NOTES = { flight: "Imported flights were added to the log only. Aircraft hours/cycles and battery cycles were not changed (use the Aircraft and Batteries files for totals).",
+  mission: "Imported missions were added without checklists or risk assessments." };
+function exportEntityCsv(type, fields, list, data) {
+  downloadCsv(CSV_FILENAMES[type] || `${type}.csv`, exportCsvText(fields, list, data));
 }
-// Header-only CSV — lets a user see the exact expected columns without first exporting real data.
+// Header-only CSV: shows the exact expected columns without first exporting real data.
 function downloadTemplateCsv(type, fields) {
   const base = (CSV_FILENAMES[type] || `${type}.csv`).replace(/\.csv$/, "");
   downloadCsv(`${base}-template.csv`, rowsToCsv(fields.map(f => f.label), []));
 }
-// Parses a CSV (matched by header label, case-insensitive) into candidate records merged over the type's
-// normal form defaults, validates each row with the *same* validate() the modal forms use, and reports
-// errors per row without touching any row that fails — only valid rows get upserted.
-function importEntityCsv(type, fields, text, upsert, prefix) {
-  const rows = parseCsvText(text);
-  if (rows.length < 2) return { added: 0, errors: [{ row: 1, msgs: ["No data rows found."] }] };
-  const header = rows[0].map(h => h.trim().toLowerCase());
-  const colFor = (label) => header.indexOf(label.toLowerCase());
-  const defaults = init({ type });
-  const errors = []; let added = 0;
-  rows.slice(1).forEach((cells, i) => {
-    const rec = { ...defaults }; const numErrs = [];
-    fields.forEach(f => { const ci = colFor(f.label); if (ci === -1) return;
-      const raw = unguardCell((cells[ci] ?? "").trim());
-      if (NUMERIC_FIELDS.has(f.key)) {
-        const n = raw === "" ? 0 : Number(raw);
-        if (Number.isFinite(n)) rec[f.key] = n; else { rec[f.key] = 0; numErrs.push(`${f.label} must be a number (got "${raw}").`); }
-      } else rec[f.key] = raw; });
-    const errs = [...numErrs, ...validate(type, rec)];
-    if (errs.length) { errors.push({ row: i + 2, msgs: errs }); return; }
-    upsert(CONFIG[type].coll, { ...rec, id: uid(prefix) });
-    added++;
-  });
-  return { added, errors };
-}
-// Shared Export/Import CSV state for the Aircraft and Users views — each view renders its own buttons
-// and banner placement, but the file-picker plumbing and row-report state live here once.
-function useCsvImportExport(type, fields, list, upsert, prefix) {
+// Shared Export/Import CSV state: each view renders its own buttons and banner; the file picker and report state live here.
+function useCsvImportExport(type, fields, list, upsert, prefix, data) {
   const [report, setReport] = useState(null);
-  const exportNow = () => exportEntityCsv(type, fields, list);
+  const exportNow = () => exportEntityCsv(type, fields, list, data);
   const importNow = () => {
-    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,text/csv";
-    inp.onchange = async () => { const f = inp.files?.[0]; if (!f) return; setReport(importEntityCsv(type, fields, await f.text(), upsert, prefix)); };
+    const inp = document.createElement("input"); inp.type = "file"; inp.accept = ".csv,.txt,text/csv,text/plain,application/vnd.ms-excel";
+    inp.onchange = async () => {
+      const f = inp.files?.[0]; if (!f) return;
+      let text;
+      try { text = await f.text(); } catch { setReport({ added: 0, errors: [{ row: 1, msgs: ["Couldn't read that file."] }], ignored: [], missing: [] }); return; }
+      const res = importRecords({ fields, text, data, defaults: init({ type }), validate: rec => validate(type, rec), makeId: () => uid(prefix) });
+      res.records.forEach(rec => upsert(CONFIG[type].coll, rec));
+      setReport({ added: res.records.length, errors: res.errors, ignored: res.ignored, missing: res.missing, note: res.records.length ? CSV_IMPORT_NOTES[type] : "" });
+    };
     inp.click();
   };
   return { report, clearReport: () => setReport(null), exportNow, importNow, downloadTemplate: () => downloadTemplateCsv(type, fields) };
 }
 function CsvReportBanner({ report, onDismiss }) {
   if (!report) return null;
-  return <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border bd sf px-4 py-2.5 text-[11px]">
-    <div>
-      <span className={report.errors.length ? "text-amber-500" : "acc"}>{report.added} row{report.added === 1 ? "" : "s"} imported.</span>
-      {report.errors.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-4 text-rose-400">
-        {report.errors.map((e, i) => <li key={i}>Row {e.row}: {e.msgs.join(" ")}</li>)}</ul>}
+  const bad = report.errors.length > 0;
+  return <div className="mb-3 flex items-start justify-between gap-3 rounded-xl border bd sf px-4 py-2.5 text-[11px]" role="status">
+    <div className="min-w-0">
+      <span className={bad ? "text-amber-500" : "acc"}>{report.added} row{report.added === 1 ? "" : "s"} imported{bad ? `, ${report.errors.length} skipped` : ""}.</span>
+      {report.note && <div className="mt-1 t3">{report.note}</div>}
+      {bad && <ul className="mt-1 list-disc space-y-0.5 pl-4 text-rose-400">
+        {report.errors.slice(0, 50).map((e, i) => <li key={i}>Row {e.row}: {e.msgs.join(" ")}</li>)}
+        {report.errors.length > 50 && <li>…and {report.errors.length - 50} more.</li>}</ul>}
+      {report.ignored?.length > 0 && <div className="mt-1 t3">Ignored columns (not recognised): {report.ignored.join(", ")}</div>}
+      {report.missing?.length > 0 && report.added > 0 && <div className="mt-1 t3">Not in your file (defaults used): {report.missing.join(", ")}</div>}
     </div>
     <IconBtn onClick={onDismiss} label="Dismiss" className="!p-0 t4 hover:!bg-transparent hover:opacity-70"><X size={12} /></IconBtn>
   </div>;
@@ -1635,8 +1653,9 @@ function ViewToggle({ value, onChange }) {
         className={`flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium ${value === k ? "accbg" : "t3 hov"}`}>
         <Icon size={13} />{l}</button>))}</div>;
 }
-function Missions({ data, setModal, remove, nameOf, highlight, setSetting, can = true }) {
+function Missions({ data, setModal, remove, nameOf, highlight, setSetting, upsert, can = true }) {
   const list = data.missions;
+  const csv = useCsvImportExport("mission", MISSION_CSV_FIELDS, data.missions, upsert, "MSN", data);
   const hlRef = useHighlightScroll(highlight);
   const [viewMode, setViewMode] = useState("card");
   const { hidden, toggle, resetCols } = useHiddenColumns("missions", data, setSetting);
@@ -1656,7 +1675,11 @@ function Missions({ data, setModal, remove, nameOf, highlight, setSetting, can =
     <PageHeader title="Missions" subtitle="Plan operations and pre-assign crew and aircraft."
       action={<div className="flex items-center gap-2"><ViewToggle value={viewMode} onChange={setViewMode} />
         {viewMode === "list" && <ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />}
+        <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+        {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+        {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
         {can && <Btn variant="primary" onClick={() => setModal({ type: "mission" })}><Plus size={15} />New mission</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     {list.length === 0 ? <Empty icon={Map} label="No missions yet" hint="Create a mission to assign operators and aircraft." />
       : viewMode === "list"
       ? <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(m => { const hl = highlight?.coll === "missions" && highlight.id === m.id;
@@ -1683,8 +1706,9 @@ function ReadinessChip({ readiness, className = "mt-2" }) {
   return <p className={`${className} flex items-center gap-1.5 text-xs font-medium text-amber-500`}><AlertTriangle size={13} />Missing: {readiness.missing.join(", ")}</p>;
 }
 
-function Flights({ data, setModal, remove, nameOf, highlight, setSetting, can = true }) {
+function Flights({ data, setModal, remove, nameOf, highlight, setSetting, upsert, can = true }) {
   const hlRef = useHighlightScroll(highlight);
+  const csv = useCsvImportExport("flight", FLIGHT_CSV_FIELDS, data.flights, upsert, "FLT", data);
   const { hidden, toggle, resetCols } = useHiddenColumns("flights", data, setSetting);
   const runOf = f => { const runs = (data.checklistRuns || []).filter(r => r.flightId === f.id); return runs.find(r => r.complete) || runs[0]; };
   const columns = [
@@ -1703,7 +1727,11 @@ function Flights({ data, setModal, remove, nameOf, highlight, setSetting, can = 
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Flights" subtitle="Logged sorties and telemetry."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
       {can && <Btn variant="primary" onClick={() => setModal({ type: "flight" })}><Plus size={15} />Log flight</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     {data.flights.length === 0 ? <Empty icon={Plane} label="No flights logged" hint="Log a flight from here or from a mission." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{data.flights.map(f => {
         const hl = highlight?.coll === "flights" && highlight.id === f.id;
@@ -1730,9 +1758,10 @@ function Laanc({ data, setModal, remove, setSetting, can = true }) {
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(l)}</React.Fragment>)}
         <Td><RowActions onEdit={can ? () => setModal({ type: "laanc", item: l }) : null} onDelete={can ? () => remove("laanc", l.id) : null} /></Td></Row>)}</Table>}</>);
 }
-function Waivers({ data, setModal, remove, setSetting, can = true }) {
+function Waivers({ data, setModal, remove, setSetting, upsert, can = true }) {
   const now = new Date();
   const list = data.waivers || [];
+  const csv = useCsvImportExport("waiver", WAIVER_CSV_FIELDS, list, upsert, "WV", data);
   const { hidden, toggle, resetCols } = useHiddenColumns("waivers", data, setSetting);
   const columns = [
     { id: "name", label: "Name", cell: w => <Cell>{w.name}</Cell> },
@@ -1746,7 +1775,11 @@ function Waivers({ data, setModal, remove, setSetting, can = true }) {
   const visCols = columns.filter(c => !hidden.includes(c.id));
   return (<><PageHeader title="Waivers & COAs" subtitle="Part 107 waivers, COAs, and exemptions on file."
     action={<div className="flex items-center gap-2"><ColumnsMenu columns={columns} hidden={hidden} toggle={toggle} onReset={resetCols} />
+      <Btn onClick={csv.exportNow}><Download size={13} />Export CSV</Btn>
+      {can && <Btn onClick={csv.importNow}><Upload size={13} />Import CSV</Btn>}
+      {can && <Btn onClick={csv.downloadTemplate}><FileText size={13} />Download CSV Template</Btn>}
       {can && <Btn variant="primary" onClick={() => setModal({ type: "waiver" })}><Plus size={15} />New waiver / COA</Btn>}</div>} />
+    <CsvReportBanner report={csv.report} onDismiss={csv.clearReport} />
     {list.length === 0 ? <Empty icon={BadgeCheck} label="No waivers or COAs" hint="Track waivers, COAs, and exemptions with their scope and expiry." />
       : <Table cols={[...visCols.map(c => c.label), ""]}>{list.map(w => <Row key={w.id}>
         {visCols.map(c => <React.Fragment key={c.id}>{c.cell(w)}</React.Fragment>)}
@@ -1930,7 +1963,7 @@ function RiskList({ data, setModal, remove, setSetting, can = true }) {
 }
 function Maintenance({ data, setModal, remove, nameOf, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("maintenance", data, setSetting);
-  const csv = useCsvImportExport("maintenance", MAINTENANCE_CSV_FIELDS, data.maintenance, upsert, "MX");
+  const csv = useCsvImportExport("maintenance", MAINTENANCE_CSV_FIELDS, data.maintenance, upsert, "MX", data);
   const columns = [
     { id: "date", label: "Date", cell: m => <Cell mono>{m.date}</Cell> },
     { id: "aircraft", label: "Aircraft", cell: m => <Cell mono>{nameOf("aircraft", m.aircraft)}</Cell> },
@@ -1953,7 +1986,7 @@ function Maintenance({ data, setModal, remove, nameOf, setSetting, upsert, can =
 }
 function Incidents({ data, setModal, remove, nameOf, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("incidents", data, setSetting);
-  const csv = useCsvImportExport("incident", INCIDENT_CSV_FIELDS, data.incidents, upsert, "INC");
+  const csv = useCsvImportExport("incident", INCIDENT_CSV_FIELDS, data.incidents, upsert, "INC", data);
   const columns = [
     { id: "date", label: "Date", cell: i => <Cell mono>{i.date}</Cell> },
     { id: "aircraft", label: "Aircraft", cell: i => <Cell mono>{nameOf("aircraft", i.aircraft)}</Cell> },
@@ -1978,7 +2011,7 @@ function Aircraft({ data, setModal, remove, highlight, setSetting, upsert, can =
   const now = new Date();
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("aircraft", data, setSetting);
-  const csv = useCsvImportExport("aircraft", AIRCRAFT_CSV_FIELDS, data.aircraft, upsert, "AC");
+  const csv = useCsvImportExport("aircraft", AIRCRAFT_CSV_FIELDS, data.aircraft, upsert, "AC", data);
   const columns = [
     { id: "tail", label: "Tail / ID", cell: a => <Cell mono>{a.tail}</Cell> },
     { id: "model", label: "Model", cell: a => <Cell>{a.model}</Cell> },
@@ -2008,7 +2041,7 @@ function Aircraft({ data, setModal, remove, highlight, setSetting, upsert, can =
 }
 function Batteries({ data, setModal, remove, setSetting, upsert, can = true }) {
   const { hidden, toggle, resetCols } = useHiddenColumns("batteries", data, setSetting);
-  const csv = useCsvImportExport("battery", BATTERY_CSV_FIELDS, data.batteries, upsert, "BAT");
+  const csv = useCsvImportExport("battery", BATTERY_CSV_FIELDS, data.batteries, upsert, "BAT", data);
   const columns = [
     { id: "label", label: "Label", cell: b => <Cell mono>{b.label}</Cell> },
     { id: "chem", label: "Chemistry", cell: b => <Cell>{b.chem}</Cell> },
@@ -2034,7 +2067,7 @@ function Equipment({ data, setModal, remove, nameOf, highlight, setSetting, upse
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("equipment", data, setSetting);
   const list = data.equipment || [];
-  const csv = useCsvImportExport("equipment", EQUIPMENT_CSV_FIELDS, list, upsert, "EQ");
+  const csv = useCsvImportExport("equipment", EQUIPMENT_CSV_FIELDS, list, upsert, "EQ", data);
   const columns = [
     { id: "name", label: "Name", cell: e => <Cell>{e.name}</Cell> },
     { id: "category", label: "Category", cell: e => <Cell>{e.category}</Cell> },
@@ -2083,7 +2116,7 @@ function Workflows({ data, setModal, remove, setSetting, can = true }) {
 function UsersView({ data, setModal, remove, highlight, setSetting, upsert, can = true }) {
   const hlRef = useHighlightScroll(highlight);
   const { hidden, toggle, resetCols } = useHiddenColumns("users", data, setSetting);
-  const csv = useCsvImportExport("user", USER_CSV_FIELDS, data.users, upsert, "OP");
+  const csv = useCsvImportExport("user", USER_CSV_FIELDS, data.users, upsert, "OP", data);
   const columns = [
     { id: "name", label: "Name", cell: u => <Cell>{u.name}</Cell> },
     { id: "role", label: "Role", cell: u => <Cell>{u.role}</Cell> },
