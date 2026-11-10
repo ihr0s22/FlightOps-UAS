@@ -2,7 +2,7 @@
 process.env.TZ = "America/New_York";
 
 import { describe, it, expect } from "vitest";
-import { daysUntil, addDays, applyFlight, sampleTraffic } from "../src/logic.js";
+import { daysUntil, addDays, applyFlight, sampleTraffic, planeIconRotation } from "../src/logic.js";
 import { uid } from "../src/schema.js";
 
 describe("addDays", () => {
@@ -99,4 +99,23 @@ describe("sampleTraffic", () => {
     const a = sampleTraffic(10, 20)[0], b = sampleTraffic(11, 20)[0];
     expect(b.lat - a.lat).toBeCloseTo(1, 10);
   });
+});
+
+describe("planeIconRotation", () => {
+  it("offsets the icon's built-in 45 degree nose so the nose points along the heading", () => {
+    expect(planeIconRotation(45)).toBe(0);      // icon already points north-east
+    expect(planeIconRotation(90)).toBe(45);     // east
+    expect(planeIconRotation(180)).toBe(135);   // south
+    expect(planeIconRotation(270)).toBe(225);   // west
+  });
+  it("wraps into 0-360", () => {
+    expect(planeIconRotation(0)).toBe(315);     // north
+    expect(planeIconRotation(360)).toBe(315);
+    expect(planeIconRotation(-90)).toBe(225);
+    expect(planeIconRotation(725)).toBe(320);   // 725 deg == 5 deg
+  });
+  it("returns null when the heading is unknown or invalid", () => {
+    for (const bad of [null, undefined, "", "abc", NaN, Infinity]) expect(planeIconRotation(bad)).toBeNull();
+  });
+  it("accepts numeric strings", () => { expect(planeIconRotation("90")).toBe(45); });
 });

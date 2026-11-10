@@ -57,3 +57,14 @@ export const sampleTraffic = (lat, lon) => ([
   { cs: "SKW44", alt: 3400, hdg: 200, lat: lat - 0.05, lon: lon - 0.03 },
   { cs: "N88PA", alt: 800, hdg: 310, lat: lat + 0.02, lon: lon - 0.05 },
 ]);
+
+// lucide's Plane icon is drawn with its nose toward the UPPER RIGHT (45 degrees clockwise from north), so a CSS
+// rotation of the raw track would point every aircraft 45 degrees too far clockwise. Returns the rotation (0-360)
+// that makes the nose point along `hdg` (degrees clockwise from north), or null when the heading is unknown.
+export const PLANE_ICON_NOSE_DEG = 45;
+export function planeIconRotation(hdg) {
+  if (hdg === null || hdg === undefined || hdg === "") return null;
+  const n = Number(hdg);
+  if (!Number.isFinite(n)) return null;
+  return (((n - PLANE_ICON_NOSE_DEG) % 360) + 360) % 360;
+}

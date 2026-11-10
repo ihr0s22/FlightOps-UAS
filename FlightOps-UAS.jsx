@@ -17,7 +17,7 @@ import {
   validateHttpUrl, validateUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
   tileUrl, geocoderBase, trafficDist, integrationsSummary, checkReachable, checkApi, checkWebSocket, checkImage,
 } from "./src/integrations.js";
-import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, sampleTraffic } from "./src/logic.js";
+import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, sampleTraffic, planeIconRotation } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
   hasArtifactStore, fsSupported, loadState, saveState, clearState, setSaveStatus, subscribeSaveStatus,
@@ -872,12 +872,15 @@ function TileMap({ basemap, center, zoom, markers, onPan, polygons = [], maps })
     </svg>}
     {markers.map((m, i) => { const p = proj(m.lat, m.lon); if (p.left < -40 || p.left > size.w + 40 || p.top < -40 || p.top > size.h + 40) return null;
       const clickable = !!m.onClick;
-      return <div key={i} onClick={m.onClick} title={m.title}
+      const label = m.title || (m.cs ? `${m.cs}, ${m.alt} ft${planeIconRotation(m.hdg) == null ? "" : `, heading ${String(Math.round(((+m.hdg % 360) + 360) % 360)).padStart(3, "0")}°`}` : undefined);
+      return <div key={i} onClick={m.onClick} title={label} aria-label={label}
         className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center ${clickable ? "cursor-pointer" : "pointer-events-none"}`}
         style={{ left: p.left, top: p.top }}>
         {m.kind === "mission"
           ? <MapPin size={16} style={{ color: "#22c55e" }} fill="#22c55e22" />
-          : <Plane size={14} style={{ color: "#f59e0b", transform: `rotate(${m.hdg || 0}deg)` }} />}
+          : planeIconRotation(m.hdg) == null
+            ? <span className="block h-2.5 w-2.5 rounded-full border-2" style={{ borderColor: "#f59e0b" }} />   /* unknown heading: neutral dot, not a misleading arrow */
+            : <Plane size={14} style={{ color: "#f59e0b", transform: `rotate(${planeIconRotation(m.hdg)}deg)` }} />}
         <span className="mt-0.5 rounded bg-black/70 px-1 font-mono text-[9px]" style={{ color: m.kind === "mission" ? "#86efac" : "#fde68a" }}>
           {m.kind === "mission" ? m.label : `${m.cs} · ${m.alt}ft`}</span></div>; })}
   </div>;
@@ -920,7 +923,7 @@ function Airspace({ data, setSetting, onSelectMission }) {
           ? `${relay}/api/adsb?lat=${as.lat}&lon=${as.lon}&dist=${trafficDist(as)}`
           : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/${trafficDist(as)}`;
       const r = await fetch(url, relay && url.startsWith(relay) ? { headers: relayHeaders() } : undefined); const j = await r.json();
-      const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: a.track || 0, lat: a.lat, lon: a.lon }));
+      const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: Number.isFinite(+a.track) && a.track !== null && a.track !== "" ? +a.track : null, lat: a.lat, lon: a.lon }));
       setTraffic(ac.length ? ac : sample);
     } catch {
       setTraffic(sample);
