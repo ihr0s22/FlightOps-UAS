@@ -17,7 +17,7 @@ import {
   validateHttpUrl, validateUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
   tileUrl, geocoderBase, trafficDist, integrationsSummary, checkReachable, checkApi, checkWebSocket, checkImage,
 } from "./src/integrations.js";
-import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight } from "./src/logic.js";
+import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, sampleTraffic } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
   hasArtifactStore, fsSupported, loadState, saveState, clearState, setSaveStatus, subscribeSaveStatus,
@@ -898,21 +898,17 @@ function Airspace({ data, setSetting, onSelectMission }) {
     .filter(m => (m.geofence || []).length >= 3)
     .map(m => ({ points: m.geofence, color: "#22c55e" })),
     [data.missions]);
-  const [traffic, setTraffic] = useState([]);
+  const [traffic, setTraffic] = useState(() => sampleTraffic(as.lat, as.lon));   // anchored where the screen opened; panning must not move them
   const [loading, setLoading] = useState(false);
   const [trafficMsg, setTrafficMsg] = useState("");
   const [wx, setWx] = useState(null);
   const [wxMsg, setWxMsg] = useState("");
   const [wxLoading, setWxLoading] = useState(false);
 
-  const sample = useMemo(() => ([
-    { cs: "N512QR", alt: 1200, hdg: 70, lat: as.lat + 0.04, lon: as.lon + 0.06 },
-    { cs: "SKW44", alt: 3400, hdg: 200, lat: as.lat - 0.05, lon: as.lon - 0.03 },
-    { cs: "N88PA", alt: 800, hdg: 310, lat: as.lat + 0.02, lon: as.lon - 0.05 },
-  ]), [as.lat, as.lon]);
 
   const fetchTraffic = async () => {
     setLoading(true); setTrafficMsg("");
+    const sample = sampleTraffic(as.lat, as.lon);   // fallback contacts, anchored at the current view when ADS-B is requested
     try {
       // opendata.adsb.fi answers fine server-side but sends no Access-Control-Allow-Origin header, so a
       // direct browser fetch is always blocked by CORS. Route through the relay (same one used for METAR)
@@ -934,7 +930,6 @@ function Airspace({ data, setSetting, onSelectMission }) {
     }
     finally { setLoading(false); }
   };
-  useEffect(() => { setTraffic(sample); }, [sample]);
 
   const fetchWx = async () => {
     setWxMsg(""); setWxLoading(true);
@@ -1738,7 +1733,7 @@ function IntegrationsHub({ data, setSetting }) {
         <div className="grid grid-cols-3 gap-3">
           <SettingInput label="Centre lat" value={String(as.lat)} inputMode="decimal" validate={v => validateNumberRange(v, -90, 90, "Latitude")} onCommit={v => setSetting(["airspace", "lat"], +v)} />
           <SettingInput label="Centre lon" value={String(as.lon)} inputMode="decimal" validate={v => validateNumberRange(v, -180, 180, "Longitude")} onCommit={v => setSetting(["airspace", "lon"], +v)} />
-          <SettingInput label="Zoom" value={String(as.zoom)} inputMode="numeric" validate={v => validateNumberRange(v, 3, 18, "Zoom")} onCommit={v => setSetting(["airspace", "zoom"], Math.round(+v))} />
+          <SettingInput label="Zoom" value={String(as.zoom)} inputMode="numeric" validate={v => validateNumberRange(v, 5, 15, "Zoom")} onCommit={v => setSetting(["airspace", "zoom"], Math.round(+v))} />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <TestRow run={testTiles} label="Test tiles" />

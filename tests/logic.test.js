@@ -2,7 +2,7 @@
 process.env.TZ = "America/New_York";
 
 import { describe, it, expect } from "vitest";
-import { daysUntil, addDays, applyFlight } from "../src/logic.js";
+import { daysUntil, addDays, applyFlight, sampleTraffic } from "../src/logic.js";
 import { uid } from "../src/schema.js";
 
 describe("addDays", () => {
@@ -86,4 +86,17 @@ describe("uid", () => {
     expect(seen.size).toBe(50000);
   });
   it("keeps the PREFIX-suffix format", () => { expect(uid("AC")).toMatch(/^AC-[a-z0-9]+$/); });
+});
+
+describe("sampleTraffic", () => {
+  it("places contacts around the given position", () => {
+    const t = sampleTraffic(38.95, -77.45);
+    expect(t).toHaveLength(3);
+    for (const c of t) { expect(Math.abs(c.lat - 38.95)).toBeLessThan(0.1); expect(Math.abs(c.lon + 77.45)).toBeLessThan(0.1); }
+  });
+  it("is a pure function of position (same input, same contacts; different input, shifted contacts)", () => {
+    expect(sampleTraffic(10, 20)).toEqual(sampleTraffic(10, 20));
+    const a = sampleTraffic(10, 20)[0], b = sampleTraffic(11, 20)[0];
+    expect(b.lat - a.lat).toBeCloseTo(1, 10);
+  });
 });
