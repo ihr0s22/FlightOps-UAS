@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   validateUrl, validateHttpUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
   tileUrl, geocoderBase, trafficDist, integrationsSummary, checkReachable, checkApi, checkWebSocket, checkImage,
-  DEFAULT_TILES, DEFAULT_GEOCODER,
+  DEFAULT_TILES, DEFAULT_GEOCODER, parseCollapse, collapseReducer, emptyCollapse,
 } from "../src/integrations.js";
 import { seed, ensure } from "../src/schema.js";
 
@@ -158,5 +158,42 @@ describe("connection tests", () => {
     class Bad { set src(_) { setTimeout(() => this.onerror(), 0); } }
     expect((await checkImage("https://x.test/0/0/0.png", { ImageImpl: Good })).ok).toBe(true);
     expect((await checkImage("https://x.test/0/0/0.png", { ImageImpl: Bad })).ok).toBe(false);
+  });
+});
+
+describe("hub collapse state", () => {
+  it("parses stored values defensively", () => {
+    expect(parseCollapse(null)).toEqual(emptyCollapse());
+    expect(parseCollapse("not json")).toEqual(emptyCollapse());
+    expect(parseCollapse("[1,2]")).toEqual(emptyCollapse());
+    expect(parseCollapse('{"hub":true,"cards":{"adsb":true,"x":false,"y":"yes"}}')).toEqual({ hub: true, cards: { adsb: true } });
+    expect(parseCollapse('{"hub":"true","cards":[1]}')).toEqual(emptyCollapse());
+  });
+  it("toggles the hub and individual cards independently", () => {
+    let s = emptyCollapse();
+    s = collapseReducer(s, { type: "toggleHub" });
+    expect(s.hub).toBe(true);
+    s = collapseReducer(s, { type: "toggleCard", id: "adsb" });
+    expect(s.cards).toEqual({ adsb: true });
+    s = collapseReducer(s, { type: "toggleCard", id: "adsb" });
+    expect(s.cards).toEqual({});
+    expect(s.hub).toBe(true);            // card toggles never change the hub
+  });
+  it("collapse all / expand all affect cards only", () => {
+    let s = collapseReducer(emptyCollapse(), { type: "collapseAll", ids: ["relay", "adsb", "maps"] });
+    expect(Object.keys(s.cards).sort()).toEqual(["adsb", "maps", "relay"]);
+    expect(s.hub).toBe(false);
+    s = collapseReducer(s, { type: "expandAll" });
+    expect(s.cards).toEqual({});
+  });
+  it("reveal opens the hub and that card but leaves other cards as they were", () => {
+    const s = collapseReducer({ hub: true, cards: { maps: true, adsb: true } }, { type: "reveal", id: "adsb" });
+    expect(s).toEqual({ hub: false, cards: { maps: true } });
+  });
+  it("is pure and ignores unknown actions", () => {
+    const a = { hub: false, cards: { x: true } };
+    collapseReducer(a, { type: "toggleCard", id: "x" });
+    expect(a).toEqual({ hub: false, cards: { x: true } });
+    expect(collapseReducer(a, { type: "nope" })).toEqual(a);
   });
 });

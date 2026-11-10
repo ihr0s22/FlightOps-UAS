@@ -137,3 +137,30 @@ export function checkImage(url, { timeoutMs = 8000, ImageImpl = globalThis.Image
     img.src = url;
   });
 }
+
+/* ---------- collapse state for the hub (a per-viewer convenience, kept in localStorage, not in the workspace) ---------- */
+// Shape: { hub: boolean (true = hub collapsed), cards: { [id]: true } } — only collapsed cards are listed.
+export const COLLAPSE_KEY = "flightops:hub-collapsed";
+export const emptyCollapse = () => ({ hub: false, cards: {} });
+
+export function parseCollapse(raw) {
+  try {
+    const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return emptyCollapse();
+    const cards = {};
+    if (v.cards && typeof v.cards === "object" && !Array.isArray(v.cards)) for (const [k, val] of Object.entries(v.cards)) if (val === true) cards[k] = true;
+    return { hub: v.hub === true, cards };
+  } catch { return emptyCollapse(); }
+}
+// Pure reducer. Actions: toggleHub | toggleCard(id) | collapseAll(ids) | expandAll | reveal(id) (open hub + that card).
+export function collapseReducer(state, action) {
+  const s = parseCollapse(state);
+  switch (action.type) {
+    case "toggleHub": return { ...s, hub: !s.hub };
+    case "toggleCard": { const cards = { ...s.cards }; if (cards[action.id]) delete cards[action.id]; else cards[action.id] = true; return { ...s, cards }; }
+    case "collapseAll": return { ...s, cards: Object.fromEntries((action.ids || []).map(id => [id, true])) };
+    case "expandAll": return { ...s, cards: {} };
+    case "reveal": { const cards = { ...s.cards }; delete cards[action.id]; return { hub: false, cards }; }
+    default: return s;
+  }
+}

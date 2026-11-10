@@ -15,7 +15,7 @@ import { rowsToCsv } from "./src/csv.js";
 import { importRecords, exportCsvText } from "./src/csvImport.js";
 import {
   validateHttpUrl, validateUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
-  tileUrl, geocoderBase, trafficDist, integrationsSummary, checkReachable, checkApi, checkWebSocket, checkImage,
+  tileUrl, geocoderBase, trafficDist, integrationsSummary, COLLAPSE_KEY, collapseReducer, parseCollapse, checkReachable, checkApi, checkWebSocket, checkImage,
 } from "./src/integrations.js";
 import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, sampleTraffic, planeIconRotation } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
@@ -1527,7 +1527,7 @@ function RelayPanel({ data, setSetting }) {
     } catch { setSync("fail"); setSaveStatus("error"); }
   };
   return (
-    <Panel title="Relay & delivery" icon={Server}>
+    <>
       <Field label="Relay base URL"><div className="flex gap-1.5">
         <TextInput value={draft} onChange={e => setDraft(e.target.value)} placeholder="https://relay.yourdomain.com" />
       </div></Field>
@@ -1545,7 +1545,7 @@ function RelayPanel({ data, setSetting }) {
         {sync === "fail" && <span className="text-xs text-rose-400">Sync failed</span>}
       </div>
       <p className="pt-2 text-[11px] t4">Save the URL, Test reachability, then Sync to push records into the relay's database (audited). Powers METAR, ADS-B traffic, scheduled delivery, and the telemetry bridge.</p>
-    </Panel>
+    </>
   );
 }
 // "Acting as" picks which crew member's role gates create/edit/delete across the app (App() computes
@@ -1615,15 +1615,23 @@ function TestRow({ run, label = "Test connection", disabled }) {
   </div>;
 }
 const INT_STATE = { connected: ["#1776bb", "Connected"], default: ["#64748b", "Built-in"], incomplete: ["#f59e0b", "Needs setup"], off: ["#64748b", "Not connected"] };
+const HubCollapseCtx = React.createContext({ isCollapsed: () => false, toggle: () => {} });
 function IntegrationCard({ id, title, icon: Icon, summary, children }) {
+  const { isCollapsed, toggle } = React.useContext(HubCollapseCtx);
+  const collapsed = isCollapsed(id);
   const [c, label] = INT_STATE[summary?.state || "off"];
   return <section id={`int-${id}`} aria-label={title} className="rounded-xl border bd sf p-4">
-    <div className="flex items-start justify-between gap-2">
-      <h3 className="flex items-center gap-2 text-sm font-semibold t1"><Icon size={15} className="acc" />{title}</h3>
+    <button type="button" onClick={() => toggle(id)} aria-expanded={!collapsed} aria-controls={`int-body-${id}`}
+      className="flex w-full items-start justify-between gap-2 text-left">
+      <span className="flex min-w-0 items-center gap-2">
+        <ChevronRight size={14} className="t4 shrink-0 transition-transform" style={{ transform: collapsed ? "none" : "rotate(90deg)" }} aria-hidden="true" />
+        <Icon size={15} className="acc shrink-0" />
+        <span className="text-sm font-semibold t1">{title}</span>
+      </span>
       <span className="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide" style={{ background: c + "22", color: c }}>{label}</span>
-    </div>
-    {summary?.detail && <p className="mt-0.5 truncate text-[11px] t4" title={summary.detail}>{summary.detail}</p>}
-    <div className="mt-3 space-y-3">{children}</div>
+    </button>
+    {summary?.detail && <p className="mt-0.5 truncate pl-6 text-[11px] t4" title={summary.detail}>{summary.detail}</p>}
+    <div id={`int-body-${id}`} hidden={collapsed} className="mt-3 space-y-3">{children}</div>
   </section>;
 }
 function IntegrationsHub({ data, setSetting }) {
@@ -1633,7 +1641,10 @@ function IntegrationsHub({ data, setSetting }) {
   const relay = (st.relay?.url || "").replace(/\/$/, "");
   const dist = trafficDist(as);
   const set = (...path) => v => setSetting(path, v);
-  const goTo = id => document.getElementById(`int-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const [collapse, setCollapse] = useState(() => { try { return parseCollapse(localStorage.getItem(COLLAPSE_KEY)); } catch { return parseCollapse(null); } });
+  const dispatch = action => setCollapse(prev => { const next = collapseReducer(prev, action); try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify(next)); } catch {} return next; });
+  const ctx = useMemo(() => ({ isCollapsed: id => !!collapse.cards[id], toggle: id => dispatch({ type: "toggleCard", id }) }), [collapse.cards]);
+  const goTo = id => { dispatch({ type: "reveal", id }); setTimeout(() => document.getElementById(`int-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); };
   const videoCheck = v => ops.type === "rtsp" ? validateUrl(v, ["rtsp:", "rtsps:", "http:", "https:"]) : validateHttpUrl(v);
 
   const testAdsb = () => as.trafficSource === "local"
@@ -1657,10 +1668,17 @@ function IntegrationsHub({ data, setSetting }) {
   };
   const testGeo = () => checkApi(`${geocoderBase(geo)}/search?format=json&limit=1&q=Washington`);
 
-  return <div className="lg:col-span-2">
+  const ids = rows.map(r => r.id);
+  return <HubCollapseCtx.Provider value={ctx}><div className="lg:col-span-2">
     <div className="mb-3 flex items-end justify-between gap-3">
-      <div><h2 className="flex items-center gap-2 text-sm font-semibold t1"><Wifi size={15} className="acc" />Integrations hub</h2>
-        <p className="mt-0.5 text-[11px] t4">Every outside connection in one place. Changes apply immediately; use Test to check each one.</p></div>
+      <button type="button" onClick={() => dispatch({ type: "toggleHub" })} aria-expanded={!collapse.hub} aria-controls="int-hub-body" className="flex min-w-0 items-start gap-2 text-left">
+        <ChevronRight size={15} className="t4 mt-0.5 shrink-0 transition-transform" style={{ transform: collapse.hub ? "none" : "rotate(90deg)" }} aria-hidden="true" />
+        <span><span className="flex items-center gap-2 text-sm font-semibold t1"><Wifi size={15} className="acc" />Integrations hub</span>
+          <span className="mt-0.5 block text-[11px] t4">Every outside connection in one place. Changes apply immediately; use Test to check each one.</span></span>
+      </button>
+      {!collapse.hub && <div className="flex shrink-0 gap-1.5">
+        <Btn onClick={() => dispatch({ type: "expandAll" })}>Expand all</Btn>
+        <Btn onClick={() => dispatch({ type: "collapseAll", ids })}>Collapse all</Btn></div>}
     </div>
     <div className="mb-4 flex flex-wrap gap-1.5" role="list" aria-label="Integration status">
       {rows.map(r => { const [c, label] = INT_STATE[r.state];
@@ -1668,8 +1686,9 @@ function IntegrationsHub({ data, setSetting }) {
           className="flex items-center gap-1.5 rounded-full border bd px-2.5 py-1 text-[11px] t2 hov">
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: c }} />{r.label}<span className="t4">· {label}</span></button>; })}
     </div>
-    <div className="grid gap-4 lg:grid-cols-2">
-      <div id="int-relay" className="lg:col-span-2"><RelayPanel data={data} setSetting={setSetting} /></div>
+    <div id="int-hub-body" hidden={collapse.hub} className="grid gap-4 lg:grid-cols-2">
+      <div className="lg:col-span-2"><IntegrationCard id="relay" title="Relay & delivery" icon={Server} summary={sum.relay}>
+        <RelayPanel data={data} setSetting={setSetting} /></IntegrationCard></div>
 
       <IntegrationCard id="adsb" title="ADS-B traffic" icon={Signal} summary={sum.adsb}>
         <Field label="Source"><Select value={as.trafficSource} onChange={e => setSetting(["airspace", "trafficSource"], e.target.value)}>
@@ -1753,7 +1772,7 @@ function IntegrationsHub({ data, setSetting }) {
         </div>
       </IntegrationCard>
     </div>
-  </div>;
+  </div></HubCollapseCtx.Provider>;
 }
 
 function Settings({ data, setData, setSetting, onReset, can }) {
