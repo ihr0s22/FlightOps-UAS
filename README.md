@@ -102,6 +102,20 @@ docker compose up -d --build
 The relay's synced snapshots persist in a named volume (`relay-data`) across restarts. Stop everything
 with `docker compose down` (add `-v` to also wipe the relay's synced data).
 
+### Local copy that rebuilds from your latest changes
+
+On Windows, one command rebuilds the images from your current working folder (committed or not, pushed or not),
+restarts the containers and waits until both are healthy:
+
+```powershell
+./scripts/local-deploy.ps1                       # build + start
+./scripts/local-deploy.ps1 -Token "long-random"  # require a relay access token
+./scripts/local-deploy.ps1 -Stop                 # stop (data kept)
+./scripts/local-deploy.ps1 -Down                 # remove containers (relay data kept)
+```
+
+Your records live in your browser (or a folder you connect in Settings), so rebuilding never touches them.
+
 If you'd rather run just the static app without Docker, `Dockerfile`/`nginx.conf` aren't required —
 `npm run build && npm run preview` works the same way as the GitHub Pages build.
 

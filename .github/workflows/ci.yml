@@ -44,3 +44,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    # Catches broken Dockerfiles (they are never built by the Pages deploy).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t flightops-app .
+      - run: docker build -t flightops-relay ./relay
