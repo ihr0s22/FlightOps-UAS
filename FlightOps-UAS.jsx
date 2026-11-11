@@ -17,7 +17,7 @@ import {
   validateHttpUrl, validateUrl, validateWsUrl, validateTileTemplate, validateNumberRange, validateStation, validateMqttTopic,
   tileUrl, geocoderBase, trafficDist, integrationsSummary, COLLAPSE_KEY, collapseReducer, parseCollapse, checkReachable, checkApi, checkWebSocket, checkImage,
 } from "./src/integrations.js";
-import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, sampleTraffic, planeIconRotation } from "./src/logic.js";
+import { daysUntil, addDays, clamp, round2, healthPerCycle, applyFlight, planeIconRotation } from "./src/logic.js";
 import { SCHEMA_VERSION, uid, seed, emptyWorkspace, migrate, ensure } from "./src/schema.js";
 import {
   hasArtifactStore, fsSupported, loadState, saveState, clearState, setSaveStatus, subscribeSaveStatus,
@@ -901,7 +901,8 @@ function Airspace({ data, setSetting, onSelectMission }) {
     .filter(m => (m.geofence || []).length >= 3)
     .map(m => ({ points: m.geofence, color: "#22c55e" })),
     [data.missions]);
-  const [traffic, setTraffic] = useState(() => sampleTraffic(as.lat, as.lon));   // anchored where the screen opened; panning must not move them
+  const [traffic, setTraffic] = useState([]);   // empty until a real ADS-B fetch succeeds; never show made-up contacts
+  const [trafficStatus, setTrafficStatus] = useState("idle");   // idle | ok | failed
   const [loading, setLoading] = useState(false);
   const [trafficMsg, setTrafficMsg] = useState("");
   const [wx, setWx] = useState(null);
@@ -911,7 +912,6 @@ function Airspace({ data, setSetting, onSelectMission }) {
 
   const fetchTraffic = async () => {
     setLoading(true); setTrafficMsg("");
-    const sample = sampleTraffic(as.lat, as.lon);   // fallback contacts, anchored at the current view when ADS-B is requested
     try {
       // opendata.adsb.fi answers fine server-side but sends no Access-Control-Allow-Origin header, so a
       // direct browser fetch is always blocked by CORS. Route through the relay (same one used for METAR)
@@ -924,12 +924,13 @@ function Airspace({ data, setSetting, onSelectMission }) {
           : `https://opendata.adsb.fi/api/v2/lat/${as.lat}/lon/${as.lon}/dist/${trafficDist(as)}`;
       const r = await fetch(url, relay && url.startsWith(relay) ? { headers: relayHeaders() } : undefined); const j = await r.json();
       const ac = (j.aircraft || j.ac || []).filter(a => a.lat && a.lon).map(a => ({ cs: (a.flight || a.hex || "—").trim(), alt: a.alt_baro || a.alt_geom || 0, hdg: Number.isFinite(+a.track) && a.track !== null && a.track !== "" ? +a.track : null, lat: a.lat, lon: a.lon }));
-      setTraffic(ac.length ? ac : sample);
+      setTraffic(ac); setTrafficStatus("ok");
+      if (!ac.length) setTrafficMsg("Connected, but no aircraft were reported near the map centre.");
     } catch {
-      setTraffic(sample);
+      setTraffic([]); setTrafficStatus("failed");
       setTrafficMsg(as.trafficSource === "local" && as.localUrl
-        ? "Couldn't reach your local receiver — showing sample contacts."
-        : "adsb.fi blocks direct browser requests (no CORS headers) — set a relay URL in Settings to proxy /api/adsb, or switch to a local receiver. Showing sample contacts.");
+        ? "Couldn't reach your local receiver. No traffic is being shown."
+        : "Couldn't load ADS-B traffic. adsb.fi blocks direct browser requests (no CORS headers): set a relay URL in Settings to proxy /api/adsb, or switch to a local receiver. No traffic is being shown.");
     }
     finally { setLoading(false); }
   };
@@ -972,7 +973,7 @@ function Airspace({ data, setSetting, onSelectMission }) {
             <IconBtn onClick={() => setSetting(["airspace", "zoom"], Math.max(5, as.zoom - 1))} label="Zoom out" className="grid !h-7 !w-7 place-items-center rounded bg-black/60 !text-white"><Minus size={14} /></IconBtn>
           </div>
           <div className="absolute bottom-2 left-2 rounded bg-black/60 px-2 py-1 font-mono text-[10px] text-slate-200">
-            {as.lat.toFixed(3)}, {as.lon.toFixed(3)} · z{as.zoom} · {traffic.length} contacts {as.trafficSource === "local" ? "(local)" : "(adsb.fi)"} · {missionMarkers.length} mission{missionMarkers.length === 1 ? "" : "s"} · {missionPolygons.length} flight area{missionPolygons.length === 1 ? "" : "s"}
+            {as.lat.toFixed(3)}, {as.lon.toFixed(3)} · z{as.zoom} · {trafficStatus === "ok" ? `${traffic.length} contact${traffic.length === 1 ? "" : "s"} ${as.trafficSource === "local" ? "(local)" : "(adsb.fi)"}` : trafficStatus === "failed" ? "traffic unavailable" : "no traffic loaded"} · {missionMarkers.length} mission{missionMarkers.length === 1 ? "" : "s"} · {missionPolygons.length} flight area{missionPolygons.length === 1 ? "" : "s"}
           </div>
         </div>
         {trafficMsg && <p className="border-t bd px-4 py-1.5 text-[11px] text-amber-500">{trafficMsg}</p>}

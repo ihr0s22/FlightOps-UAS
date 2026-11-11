@@ -50,14 +50,6 @@ export function applyFlight(d, flight, newId) {
   return { ...d, flights, aircraft, batteries };
 }
 
-// Demo contacts shown when no live ADS-B feed is available. They are placed relative to the position they are
-// generated at (and must then stay put: pan/zoom must never regenerate them, or they would follow the map centre).
-export const sampleTraffic = (lat, lon) => ([
-  { cs: "N512QR", alt: 1200, hdg: 70, lat: lat + 0.04, lon: lon + 0.06 },
-  { cs: "SKW44", alt: 3400, hdg: 200, lat: lat - 0.05, lon: lon - 0.03 },
-  { cs: "N88PA", alt: 800, hdg: 310, lat: lat + 0.02, lon: lon - 0.05 },
-]);
-
 // lucide's Plane icon is drawn with its nose toward the UPPER RIGHT (45 degrees clockwise from north), so a CSS
 // rotation of the raw track would point every aircraft 45 degrees too far clockwise. Returns the rotation (0-360)
 // that makes the nose point along `hdg` (degrees clockwise from north), or null when the heading is unknown.
